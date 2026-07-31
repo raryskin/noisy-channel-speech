@@ -56,4 +56,4 @@ rsconnect/
 *.rds
 manuscript_sections/rdata/*
 manuscript_sections/stan_files/**/*.csv
-
+data/*
