@@ -1,0 +1,270 @@
+---
+title             : "Eye-gaze dynamics reveal the adaptive nature of real-time noisy-channel inference in speech comprehension"
+shorttitle        : "Eye-gaze noisy-channel speech"
+
+author: 
+  - name          : "Rachel Ryskin"
+    affiliation   : "1,2,3"
+    corresponding : yes    # Define only one corresponding author
+    address       : "5200 North Lake Rd, Merced, CA 95343"
+    email         : "rryskin@ucmerced.edu"
+#    role: # Contributorship roles (e.g., CRediT, https://credit.niso.org/)
+ #     - "Conceptualization"
+#      - "Writing - Original Draft Preparation"
+#      - "Writing - Review & Editing"
+
+affiliation:
+  - id            : "1"
+    institution   : "Department of Cognitive & Information Sciences, University of California, Merced"
+  - id            : "2"
+    institution   : "Health Sciences Research Institute, University of California, Merced"
+  - id            : "3"
+    institution   : "Center for Interdisciplinary Neuroscience, University of California, Merced"
+
+# authornote: | 
+#  Add complete departmental affiliations for each author here. Each new line herein must be indented, like this line. 
+# 
+#   Enter author note here. 
+
+abstract: |
+  To understand spoken language, listeners must extract meaning from acoustic input that is variable and noisy.
+  The noisy-channel framework posits that listeners overcome this uncertainty by rationally inferring the speaker's intent, combining prior expectations with a model of how the message may have been corrupted during transmission. 
+  However, the exact nature of this noise model and its sensitivity to context (e.g., speaker or acoustic environment) remain unknown.
+  Here, I use eye-tracking to measure human speech processing as it unfolds on the millisecond timescale, and I use the representational geometry of a self-supervised speech model (HuBERT) to estimate the noise model.
+  I show that spoken word comprehension is well captured as real-time Bayesian belief updating. Further, listeners flexibly tune their expectation of noise to the specific acoustic environment.
+  These results extend the noisy-channel framework to the moment-by-moment comprehension of speech.
+  More broadly, these findings demonstrate that the human language system continuously adapts its internal model to the statistical structure of the communicative environment.
+  By linking noisy-channel inference with real-time perceptual dynamics, this work highlights the remarkable flexibility of human cognition in navigating uncertainty and opens the door to investigating internal representations in human and artificial speech recognition systems through their fine-grained temporal dynamics.
+  
+  <!-- https://tinyurl.com/ybremelq -->
+  
+keywords          : "Noisy Channel, speech comprehension, eye-tracking, Bayesian reasoning"
+wordcount         : "6694"
+
+bibliography      : ["software-refs.bib","references.bib"]
+
+floatsintext      : no
+linenumbers       : yes
+draft             : no
+mask              : no
+
+figurelist        : no
+tablelist         : no
+footnotelist      : no
+
+classoption       : "doc"
+
+header-includes:
+  - \captionsetup[figure]{font=small}
+  - \setlength{\parskip}{0pt}
+  
+output            : papaja::apa6_pdf
+---
+
+```{r setup, include = FALSE}
+library(papaja)
+library(tidyverse)
+library(cmdstanr)
+library(patchwork)
+library(ggrepel)
+```
+
+```{r analysis-preferences}
+# Seed for random number generation
+set.seed(42)
+knitr::opts_chunk$set(cache.extra = knitr::rand_seed)
+nCores = parallel::detectCores() 
+options(mc.cores = nCores)
+```
+
+In everyday communication, interlocutors coordinate to achieve a shared goal of transferring thoughts between minds, but their primary tool---language---is ambiguous and noisy. Even simple exchanges, like asking for a fork in the kitchen, are rife with uncertainty: the speaker might say the wrong word by accident ("Hand me the pork"), a pot might fall right at the moment of the critical word, or the listener may simply not be paying attention at the right time. Yet, listeners typically overcome these imperfections. Hearing "Hand me the pork" and seeing only a fork in their vicinity, the listener will readily hand over the fork. At other times, misperceptions persist---famously illustrated by "eggcorns" (e.g., "intensive purposes" instead of "intents and purposes")---and can even have profound consequences. Administering atenolol instead of Tylenol due to a mishearing could have serious health consequences for a patient; for this reason, verbal medication orders are strictly avoided in clinical settings to protect patients from receiving incorrect and possibly harmful medication as a result of common perceptual errors. 
+
+What explains the impressive robustness of human speech comprehension as well as its occasional breakdowns?
+Noisy Channel theory [@levy_noisy_2008;@norrisShortlistBayesianModel2008;@gibsonRationalIntegrationNoisy2013;@ryskinComprehendersModelNature2018;@ryskinInPrep;@meylan2023HowAdultsUnderstand;@yurovskyPreschoolersFlexiblyAdapt2017] provides a promising account rooted in information theory [@shannon1948MathematicalTheoryCommunication]. On this view, listeners infer the speaker's intended meaning based on what the speaker is likely to say given their goals and the surrounding context (visuospatial environment, past interaction history, etc.) and how noise is likely to have corrupted the intended message. For instance, readers tend to infer that the sentence “The mother gave the candle the daughter” was intended to convey that “The mother gave the candle *to* the daughter,” but was corrupted by the deletion of “to” (or exchange of “candle” and “daughter”) [@gibsonRationalIntegrationNoisy2013]. Similarly, evidence from work on ``Good Enough'' processing suggests that comprehenders often arrive at a meaning that differs from the literal input [@ferreira2002GoodEnoughRepresentationsLanguage].
+
+In the domain of speech comprehension, the process of inferring the most likely referent, $r$, given the spoken input, $s$, can be modeled as incremental Bayesian belief updating [e.g., @clayardsPerceptionSpeechReflects2008;@kleinschmidtRobustSpeechPerception2015;@norrisShortlistBayesianModel2008]. The listener's interpretation, at any point during the unfolding speech signal, is captured by the posterior probability $P(r | s)$, which by Bayes' rule (Equation\ \@ref(eq:bayes) reflects the integration of the prior probability of possible referents $P(r)$ and the probability that the signal could have resulted from a given intended referent $P(s|r)$. In other words, this account assumes a non-deterministic relationship between what the speaker plans to say (e.g., "beaker") and the acoustic signal that is perceived by the listener. The intended message ("beaker") may be corrupted in multiple ways during transmission: for example, the speaker may produce a speech error (e.g., say "peaker"), there might be a loud sound that covers up part of the speech signal, or the listener may mishear due to inattention. A key assumption of the Noisy Channel theory is that the listener has implicit knowledge of what corruptions are more likely---a noise model---which is captured by $P(s|r)$.
+
+\begin{equation}
+    P(r | s) \propto P(s|r) \cdot P(r)
+    \label{eq:bayes}
+\end{equation}
+
+This incremental noisy-channel inference process, described in more detail below, is illustrated in Figure\ \@ref(fig:bayes-fig)A for a case where the space of possible referents is constrained to the set of objects that are mutually visible to the speaker and listener (the four objects on the table) and equally likely to be discussed. In this case, the prior probability of all candidate referents is equal at the outset and beliefs about the most likely intended referent largely reflect the noise model. As shown in Figure\ \@ref(fig:bayes-fig)C, this incremental noisy-channel inference predicts that referents that are incompatible with the full input but share some sounds (e.g., beetle or speaker) will have substantial probability in the posterior (more so than referents with no overlap) and the posterior probabilities dynamically change as the input unfolds. Qualitatively, these predictions mimic known patterns from eye-tracking experiments [@allopennaTrackingTimeCourse1998]---words with early and late phonological overlap elicit distinct temporal patterns of early and late fixations, respectively---indicating that the noisy-channel framework captures the temporal dynamics of human speech comprehension. 
+
+
+However, the nature of the noise model remains an open question. What corruptions (e.g., speech errors, perceptual confusion) are involved and at what granularity? Further, no two conversations or contexts are alike. For instance, children produce a different distribution of speech errors than second language learners. To what extent is the noise model tuned to the particular context? In sentence reading, the noise model is tuned to the frequency and type of errors that readers experience in the surrounding context [@gibsonRationalIntegrationNoisy2013;@ryskinComprehendersModelNature2018]. In speech comprehension, previous work indicates that listeners can adapt to novel pronunciations of known phonemes [@bradlowPerceptualAdaptationNonnative2008; @mayeWeckudWetchWast2008; @kleinschmidtRobustSpeechPerception2015] and tend to look more at competitors if they are *expecting* acoustic noise [@mcqueenChangingOnlyProbability2012]. But whether the noise model used for speech comprehension can be dynamically updated through implicit learning (i.e, tracking the statistics of noise in the environment) and/or flexible causal reasoning (i.e., altering one's internal model of the sources of noise) remains unknown.
+
+
+## Present research
+
+The present work tests a Bayesian "noisy-channel" model of human speech comprehension (see Figure\ \@ref(fig:bayes-fig)) using eye-tracking to capture incremental inferences about the intended referent as speech is unfolding in real time [@tanenhaus1995]. Participants listened to spoken instructions (e.g., "Click on the beaker") while the location of their gaze within a visual display (see Figure\ \@ref(fig:expt-fig)) was monitored. In a seminal paper, @allopennaTrackingTimeCourse1998 revealed that, as a spoken word unfolds in time, the listener continuously maps the incoming sounds to candidate referents.[^p] For instance, when they hear "Click on the beaker," while viewing a display with four objects, listeners' eye movements begin to reflect cognitive processing within 200 ms of the onset of the critical word, "beaker." Initially, listeners look equally at the target (beaker) and a competitor sharing the same onset phonemes (beetle), making fewer fixations to unrelated objects. Later in the word, after disambiguation by the 'k,' fixations to the target increase whereas early competitor fixations decrease. Crucially, participants also look at a late competitor (speaker) more than an unrelated distractor, despite the fact that its initial phoneme is inconsistent with what the listener heard. In the present work, I replicate and extend this experimental paradigm, using it as an ecologically valid method of recording the moment-by-moment mapping from an acoustic input to an object in the world.
+
+[^p]: Note that eye movement patterns in this task can also be successfully modeled using a connectionist network like TRACE [@mcclellandTRACEModelSpeech1986; @allopennaTrackingTimeCourse1998]. The two modeling approaches constitute different levels of analysis [@marrVisionComputationalInvestigation1982a] and need not be in conflict [@mcclelland2014InteractiveActivationMutual]. Here, the focus is on testing the noisy-channel theory at the computational level of analysis and examining adaptation of the noise model.  Whether TRACE or other neural networks [@magnuson2020EARSHOTMinimalNeural; @brodbeck2025RecurrentNeuralNetworks] could be seen as a mechanistic implementation of noisy-channel speech comprehension is an interesting open question beyond the scope of the present work. 
+
+The proportion of fixations to a potential object that is being referred to (the referent) can be viewed as a reflection of how much probability the listener is assigning to that referent, $r_i$, given the portion of the spoken input, $s$, they hear at any given time, $P(r_i \mid s)$. By Bayes' rule\ \@ref(eq:bayes-full), this posterior probability is proportional to the product of the prior probability that a particular image would be the referent in the first place, $P(r_i)$, and the probability of the particular auditory signal being produced by the speaker given the intended referent, $P(s \mid r_i)$. The latter term incorporates the likelihood of noise that could corrupt the auditory signal. In the current implementation, this likelihood is captured by the similarity, $\text{Sim}_i$, in representations of the acoustics of $s$ with the acoustics that would correspond to a particular $r_i$ if it were named. This similarity is modulated by a free parameter $\tau$ as in\ \@ref(eq:likelihood). When $\tau$ is small, differences in similarities are exaggerated, and when $\tau$ is larger, the distribution of likelihoods gets flatter/more uniform (Figure\ \@ref(fig:bayes-fig)B).
+<!-- Exponentiating guarantees positive values and exaggerates small differences between similarity values -->
+
+\begin{equation}
+P(r_i\mid s) = \frac{P(s\mid r_i) P(r_i)}{\sum_j P(s\mid r_j) P(r_j)}
+\label{eq:bayes-full}
+\end{equation}
+
+
+\begin{equation}
+P(s \mid r_i) = \exp(\text{Sim}_i / \tau) 
+\label{eq:likelihood}
+\end{equation}
+
+
+Crucially, this Bayesian updating can occur incrementally as the utterance unfolds, with the posteriors from each timestep being used as the priors for the next timestep. Figure\ \@ref(fig:bayes-fig)C summarizes the predicted posterior probabilities for each referent ($r_i$) at each point in the input ($s$), according to this model, using idealized likelihood values. 
+
+This simple model captures multiple key features of the spoken word recognition eye-tracking data [@allopennaTrackingTimeCourse1998]: 
+    1) All four possible referents are equally likely to be fixated before the critical word onset. 
+    2) The probability of the target referent and early competitor both increase initially, while the probability of the distractor and late competitor decrease
+    3) Once the word is disambiguated (e.g., by the /k/), the probability of the early competitor decreases while the target probability increases. 
+    4) At the end of the word, the probability of the late competitor is increased relative to earlier timesteps and to unrelated distractors.
+
+ 
+The nature of the noise likelihood $P(s\mid r_i)$---how it adapts to different contexts and how best to formally estimate it---remains a key open question for characterizing noisy-channel speech comprehension and language comprehension more broadly. For the purposes of the simulations in Figure\ \@ref(fig:bayes-fig)C, idealized probability values were chosen to reflect the intuition that noise corruptions---when the output intended by the speaker does not match the input received by the listener, either due to speech errors, mishearing, or environmental noise---are rare but possible. In the current work, moving beyond idealized values, I test the adequacy of using the representational geometry of a neural speech Transformer model to capture the noise likelihood. 
+The representational similarities for every pair of $s$ and $r_i$ are computed by extracting embeddings from HuBERT [@hsu2021HuBERTSelfSupervisedSpeech], aligning them using dynamic time warping, then calculating cosine similarity for every frame (Figure\ \@ref(fig:hubert-plot)). To fit the model to eye-tracking data, the continuous acoustic input and corresponding similarity timeseries were discretized into timesteps which correspond to important time windows in the process of spoken word disambiguation. Similarities were averaged within each timestep.
+
+Finally, to test how the noise likelihood adapts to context, the experiment manipulates the level of noise in the environment across blocks. In the *Noisy* experimental blocks, short segments of acoustic noise were spliced in to two thirds of the filler trials. In the *Intact* experimental blocks, no noise was added. Note that the critical trials are identical (and corruption-free) across conditions. Participants were randomly assigned to receive the *Noisy* or *Intact* block first. Among those who receive the *Intact* block second, half were told by the experimenter that an error had occurred and they had been listening to a set of corrupted files and they would be hearing clean files thereafter. These conditions allow us to ask whether listeners adapt their estimate of noise ($\tau$) based on the statistics of how much noise they experience in their environment as well as how flexibly this noise estimate can be updated in response to a change in the presumed causal structure of the input (i.e., when explicitly told that the source of corruption has been removed).
+
+To preview, fitting the model to the eye-tracking data reveals that 1) eye-gaze during spoken word comprehension is well-modeled as noisy-channel (Bayesian) inference continuously and incrementally unfolding in real time; 2) the probability of noise in the listener's mind is malleable and tuned to the noise in the environment; and 3) the probability of noise may be flexibly updated when the causal structure of the input changes, suggesting that comprehending speech involves reasoning over a generative model which includes noise sources.
+
+(ref:bayes-fig-caption) Illustration of incremental "noisy-channel" speech perception. **A)** The speaker and listener see a table with a beaker, a beetle, an apple, and a speaker. The speaker aims to refer to the beaker. *Left*: The listener has heard only the beginning of the word. The prior probability that the speaker would have referred to any of the four objects is equivalent. The noise likelihood assigns greater probability to the input given the beaker and beetle referents than given the speaker and apple referents. According to Bayes' rule, the resulting posterior probabilities for the beaker and the beetle are higher than for the speaker and the apple. <!--In other words, given the input that they've received up to that point, the listener is most likely to interpret the speaker's intended meaning as referring to the beaker or the beetle.---> *Right*: The listener has heard the rest of the word. The prior probability is the posterior from the previous timestep. The noise likelihood assigns greater probability to the input given the beaker and speaker referents than given the beetle and apple referents. The resulting posterior probability for the beaker is highest but posterior probabilities for the beetle and the speaker are both higher than for the apple. <!--In other words, given the input that they've received up to that point, the listener is most likely to interpret the speaker's intended meaning as referring to the beaker but the speaker and beetle may also receive some consideration, despite only partial compatibility with the acoustic input.--> **B)** The likelihood is proposed to be modulated by a noise parameter, $\tau$. Higher assumed noise (larger $\tau$) flattens the distribution, pulling the probabilities of an acoustic input given different referents closer to uniform. **C)** Idealized posterior predictions across four timesteps. At the first timestep, before the onset of the noun, the posterior probability, $P(r_i \mid s)$ is equal for all four possible referents because they are equally likely to be referred to *a priori* ($P(r_i) = .25$) and the probability of saying "Click on the..." is also equally high for all possible referents (set to $P(s \mid r_i) = .99$ in this simulation). At the second timestep, the priors for referents are taken from the posteriors at the previous timestep. The listener hears /\'bi:/, so the probability of the input given the _beaker_ and _beetle_ referents is equally high (e.g., $P(s=\text{/`bi:/} \mid r=\text{beaker}) = P(s=\text{/`bi:/} \mid r=\text{beetle}) = .9$), whereas the probability of the utterance given the other two possible referents is very low (e.g., $P(s=\text{/'bi:/} \mid r=\text{speaker}) = .1$). 
+At the third timestep, the listener hears /k/, so the probability of the input given the _beaker_ and _speaker_ referents is equally high (e.g., $P(s=\text{/k/} \mid r=\text{beaker}) = .9$), whereas the probability of the utterance given the other two possible referents is very low (e.g., $P(s=\text{/k/} \mid r=\text{beetle}) = .1$). At the last timestep, the listener hears "er," so again the probability of the utterance given the _beaker_ and _speaker_ referents is equally high (e.g., $P(s=\text{/er/} \mid r=\text{beaker}) = .9$), whereas the probability of the utterance given the other two possible referents is very low (e.g., $P(s=\text{/er/} \mid r=\text{beetle}) = .1$). 
+
+```{r bayes-fig, fig.cap = "(ref:bayes-fig-caption)", out.width="90%"}
+knitr::include_graphics("manuscript_sections/image_files/theory.pdf")
+```
+
+
+# Results
+
+Across conditions, proportions of fixations to the target increase rapidly starting 200ms post-word onset (Figure\ \@ref(fig:expt-fig)). Between approximately 200ms and 700ms post-word onset, proportions of fixations to the target are lower in the Early Competition condition than in the No Competition condition. And proportions of fixations to the competitor in the Early Competition condition are higher than fixations to the distractor in the No Competition condition. Later in the processing window (~700ms to 1200ms post-word onset), proportions of fixations to the target are lower in the Late Competition condition than in the No Competition condition. And proportions of fixations to the competitor in the Late Competition condition are higher than fixations to the distractor in the No Competition condition, though these effects appear to be subtler than the Early Competition effects. These patterns largely replicate what was found by @allopennaTrackingTimeCourse1998 and reveal how inferences about the potential intended meaning of spoken input are updated moment-by-moment.
+
+
+```{r, child = 'manuscript_sections/ET-data-visualization-and-processing.Rmd'}
+
+```
+
+
+```{r, child = 'manuscript_sections/stan-model-fitting.Rmd'}
+
+```
+
+
+# Discussion
+
+The present findings demonstrate that the timecourse of eye-gaze during spoken word comprehension is well-modeled as noisy-channel inference continuously and incrementally unfolding in real time. The representational geometry of early (and some later) Transformer layers in HuBERT captures, at least in part, the listener's noise model, suggesting a role for both low-level acoustic-phonetic representations and potentially higher-level (e.g., word-level) representations [@pasad2023ComparativeLayerWiseAnalysis;@kloots2026TrackingEmergenceLinguistic]. Model comparison results indicated that a noise model with stimulus-specific representational geometry did not improve eye-gaze prediction over a generic noise likelihood (shared across all stimuli). One possibility is that this reflects a noise model in the human mind that is fairly coarse-grained. Alternatively, the deep speech model representations may be too noisy to capture the fine-grained acoustic distinctions in the minds of human listeners. Relatedly, the stimuli used in the current dataset may not sufficiently span the similarity space to reveal the predictive benefit of stimulus-specific noise likelihoods. Further probing of HuBERT representations, and comparison with other models, may be fruitful in revealing the structure of the noise model.
+
+Crucially, the noise model is adaptive. The fitted noise parameter $\tau$ was higher during blocks in which acoustic noise was added to the fillers, indicating that the probability of noise in the listener's mind is malleable and tuned to the statistics of noise in the environment [consistent with findings from @mcqueenChangingOnlyProbability2012]. Furthermore, when the noise was reduced and participants were explicitly told that the stimuli would have less noise than what came before, $\tau$ was lower than if they were not told, indicating that the probability of noise may be updated by multiple routes: both implicit perceptual evidence accumulation and explicit re-structuring of a causal model of the environment. These results are consistent with recent findings that acoustic-phonetic adaptation involves incremental, "associative-like" learning [@anderson2019ReversalShiftPhonotactic] as well as causal inferences about the sources of variation in the input [@liuInferringCausesSpeech2018; @denbyVoiceExperienceCausal2021; but see @liuTalkerspecificPronunciationSpeech2019]. 
+
+The model presented here can be refined in future work in a number of ways. For instance, in its current form, the model slightly over-predicts fixations to the competitor with late overlap. Speculatively, this may be related to the weight placed on sequence endings by the dynamic time warping algorithm, suggesting that this algorithm may deviate in important ways from the way that similarity between acoustic sequences is computed in the mind. Further, the level of uncertainty ($\tau$) is currently tied to the experiment block. In reality this $\tau$ value is likely to be dynamically updated on a more fine-grained timescale---changing from trial to trial or even moment-by-moment as a word unfolds. 
+
+These results extend the Noisy Channel framework to real-time spoken language comprehension and suggest an avenue for investigating how additional information sources (e.g., semantic, syntactic, pragmatic) are integrated moment-by-moment during noisy-channel comprehension. This account also has the potential to explain other existing observations in the speech comprehension literature. For example, as demonstrated by @norrisShortlistBayesianModel2008, the presence of frequency effects in eye-gaze [i.e., higher frequency competitors elicit more fixations than low frequency competitors in an eye-tracking setup similar to the one used here, @dahanTimeCourseFrequency2001] is straightforwardly accommodated by changing the prior (at the first timestep) to reflect the relative frequencies of the candidate referents in the language.^[It is also possible that the noise likelihood contributes to frequency effects in comprehension because speech errors may be more likely to transform a lower frequency word to a higher frequency word than the reverse.] Further, anadrome effects [i.e., anadromes of target words like "sub" to "bus" elicit more fixations than competitors with overlapping sounds like "sun", @toscano2013ReconsideringRoleTemporal] may reflect the listener's expectation that a speaker intending to say "bus" is more likely to produce a speech error resulting in "sub" than "sun". I leave a test of this hypothesis to future work.  
+
+More broadly, this account points to a view of language comprehension and processing as inference over a generative model of the communication process, including the speaker's intention to produce an utterance and multiple potential sources of corruption during transmission [e.g., speech errors, attention or memory lapses, @ryskinInPrep]. The utility of using speech model representational geometry to capture listeners' real-time inferences, as demonstrated here, opens the door to further fine-grained investigations of the information contained in the noise model of human comprehenders, as well as the evaluation of artificial speech models on their ability to mirror the rich temporal dynamics of human perception.
+
+
+# Methods
+
+All pre-processed data are available on OSF (https://osf.io/ybxru/overview?view_only=33cb61764a7c4d7baa8fdbb5b28cd1f3) and the code to reproduce the manuscript (including all figures and analyses) is available at: https://github.com/raryskin/noisy-channel-speech. Google's Gemini large language model [@gemini2026] was used for assistance with code generation and debugging. 
+
+
+## Eye-tracking experiment
+
+### Participants
+
+```{r,eval = FALSE}
+
+mapping_to_subj_IDs = ET_timecourse_data_onset %>% filter(Condition != "Practice") %>% group_by(EXPT, subjID, subnum, Subject,csv_filename, BlockOrder) %>% summarise(n_distinct(TrialOrder))
+
+ET_timecourse_data_onset %>% filter(Condition != "Practice") %>% group_by(EXPT, Subject, BlockOrder) %>% summarise(n_distinct(TrialOrder))
+
+ET_timecourse_data_onset %>% filter(Condition != "Practice") %>% group_by(EXPT, Subject) %>% summarise(n_distinct(BlockOrder))
+
+ET_dur_data_4t %>% filter(Condition != "Practice") %>% group_by(EXPT, subjID) %>% summarise(n_distinct(BlockOrder))
+
+ET_dur_data_4t %>% filter(Condition != "Practice") %>% group_by(EXPT, subjID, BlockOrder) %>% summarise(n_distinct(TrialOrder))
+
+ET_dur_data_4t %>% filter(Condition != "Practice" & BlockOrder == "b1" & EXPT == "EA" & subjID == "EA14") %>%
+  pull(TrialOrder) %>% unique()
+```
+
+
+`r length(unique(ET_dur_data_4t_crit$subjID))` students at the University of California, Merced participated in the eye-tracking experiment in exchange for course credit. All reported having normal or corrected-to-normal vision. One additional participant's data were excluded because their accuracy on filler trials was below 90%. 
+
+
+### Procedure
+
+Participants sat in front of a computer display with four pictures of objects, listened to instructions of the form "Click on the <referent>,'' and used the mouse to respond. Their eye movements were recorded by an Eyelink-1000 Plus desktop eye-tracker (with chin rest) from SR Research sampling at 1000 Hz, after a 9-point calibration and validation. Drift checks were included after each trial. Participants were told that there were two sets of instructions and pictures and that they would get a break after the first set. The session began with 3 practice trials, followed by 144 experimental trials. The study took approximately 20 minutes.
+
+### Stimuli & Design
+
+The experiment had a 3 (Trial condition: No competition vs. Early competition vs. Late competition) x 3 (Block Order condition: Intact $\rightarrow$ Noisy vs. Noisy $\rightarrow$ Intact-No explanation vs. Noisy $\rightarrow$ Intact with Explanation) mixed design. Trial condition was manipulated within participants and items. Block Order condition was manipulated between participants. Which items appeared in which block was randomly counterbalanced across participants. The order of trials within a block and the location of images on each trial were randomly generated on-the-fly for each participant using the `PsychoPy` library for stimulus presentation [@peircePsychoPy2ExperimentsBehavior2019].
+
+#### Competition Condition
+
+24 sets of stimuli were created (see example in Table \@ref(tab:stim-table)), corresponding to a target word (e.g., "beaker"), a competitor with early acoustic overlap ("beetle"), a competitor with late acoustic overlap ("speaker"), and several distractor words (e.g., "apple"). The item sets were chosen using the `LexFindR` package [@li2022LexFindRFastSimple] so that the words comprising each set were similar in frequency. Appropriate visual stimuli were then selected from a larger set of normed pictures used in previous eye-tracking studies. Each set included 3 critical competition conditions as well as 3 filler conditions. For all 3 critical trials, the audio instruction referred to the target word (e.g., "Click on the beaker"). In the _No competition_ condition, there were no competitors in the display. In the _Early competition_ condition, the set of images included a competitor with early acoustic overlap. In the _Late competition_ condition, the set of images included a competitor with late acoustic overlap. In the _Filler 1_ condition, the audio instruction referred to the early competitor (e.g., "Click on the beetle"). In the _Filler 2_ condition, the audio instruction referred to the late competitor (e.g., "Click on the speaker"). In the _Filler 3_ condition, the audio instruction referred to a distractor. The fillers were meant to ensure that participants couldn't predict which image they would need to click on simply by seeing the set of images. 
+
+Each item set appeared in all 3 critical trial conditions, as well as all 3 filler conditions within a block. 12 item sets were presented in each block. Which 12 item/stimulus sets participants received in the first vs. the second block was randomly counterbalanced across participants. 
+
+```{r stim-table, results = "asis"}
+
+design_table <- data.frame(
+  Condition = c("No competition", "Early competition", "Late competition", "Filler 1", "Filler 2", "Filler 3"),
+  Instruction   = c("Click on the beaker", "Click on the beaker", "Click on the beaker", "Click on the beetle","Click on the speaker","Click on the apple"),
+  `Image 1`   = c("beaker","beaker","beaker","beetle","speaker","apple"),
+  `Image 2`   = c("apple","beetle","speaker","beaker","beaker","beaker"),
+  `Image 3`   = c("arrow","apple","apple","arrow","apple","arrow"),
+  `Image 4`   = c("clock","arrow","arrow","clock","arrow","clock")
+)
+
+
+papaja::apa_table(
+  design_table,
+  caption = "Example Stimuli by Competition Condition (1 item out of 24).",
+  align = c("l", "l", "l", "l", "l", "l"),
+  escape = TRUE
+)
+```
+
+
+#### Block Condition
+
+Each participant received two blocks. There were 72 trials (36 critical and 36 filler) in each block. For a given participant, one block was assigned to the _Intact_ condition and one block was assigned to the _Noisy_ condition.[^q] In the _Noisy_ condition, two-thirds of the filler trial instructions contain added acoustic noise in the form of white noise or radio noise spliced into one or two sections of the preamble (e.g., "Click #n the apple", in different randomly chosen locations across items), the beginning of the referent ("Click on the #pple"), the middle of the referent ("Click on the a#le"), or the end of the referent ("Click on the appl#"). Of the noisy fillers, two-thirds had only one noise corruption spliced in and one-third had two. In order to create the noisy versions of the filler audio files, several audio files with different kinds of noise were obtained from the web and were spliced into the clean audio files (see details below). The position of the noise was uniformly distributed across items such that when noise might appear wouldn't be predictable to listeners. In the _Intact_ condition, none of the fillers contained any acoustic noise. In both block conditions, the critical trials never contained acoustic noise. 
+For participants who first heard the _Noisy_ block followed by the _Intact_ block, half were assigned to receive no explanation before the start of the second block, and half received an explanation. When no explanation was given, participants were simply told to take a break before starting the second half. When an explanation was presented, participants saw an "error message" after the first block ended: "FATAL ERROR: Audio files corrupted." This prompted the participant to alert the experimenter, who apologized and explained that the wrong files had been used. The experimenter then initiated the second block, explicitly noting that the 'correct,' corruption-free audio files had now been loaded.
+
+
+[^q] The eye-tracking experiment was inspired by a previous study by @mcqueenChangingOnlyProbability2012, but the paradigm was changed in several important ways. @mcqueenChangingOnlyProbability2012 used a passive listening and viewing task and targets were not present on the screen, meaning that the listener's goal was not to infer the referent given the spoken input. (It also meant they only analyzed fixations to the competitors.) The noise manipulation in their study was between subjects and the added noise was always in the same position, either the beginning of a word or the middle (position manipulated between subjects).
+
+## Audio stimuli and embeddings
+
+The audio stimuli were created using speech-to-text software, specifically the macOS `say` command-line utility. This yielded audio stimuli that were clear and intelligible but readily recognizable as synthetic---a deliberate choice to make the subsequent noise manipulations seem like plausible corruptions resulting from the same generative process. *Noisy* versions of filler audio stimuli were created by replacing segments of the audio file with segments of noise that were equal in duration using Praat software for speech analysis [@boersmaPraatDoingPhonetics2022]. Noise consisted of a mix of static noise and radio noise downloaded from freesound.org. Praat was also used to annotate the 4 time windows of interest on critical trials: 1) $t_0$: from the start of the audio file to the onset of the critical word (e.g., beaker), 2) $t_1$: from the onset of the critical word to the onset of the phoneme which disambiguates the target word from the cohort competitor (e.g., "k" for beaker - beetle), 3) $t_2$: from the onset of the disambiguating phoneme to the offset of the disambiguating phoneme, and 4) $t_3$: from the offset of the disambiguating phoneme to the end of the word.
+
+In addition to audio files that were used as the stimuli for the experiment, audio files corresponding to all other images presented during the experiment were generated by the same procedure. These were used to derive similarities between the acoustic information of the spoken input and the acoustic information of possible alternative referents. Embeddings for every audio file were extracted from the `hubert-xlarge-ls960-ft` pre-trained model using the `transformers` library from `HuggingFace` [@wolf2020HuggingFacesTransformersStateoftheart]. HuBERT [@hsu2021HuBERTSelfSupervisedSpeech] was chosen because it has been shown to capture human perceptual judgments [@chernyak2024PerceptualSimilaritySpace]. This generated a 128-dimensional embedding for each 20ms frame of the audio from each of the 49 transformer layers. Dynamic time warping, implemented via the `librosa` package [@mcfee2025LibrosaLibrosa0110], was used to generate alignments between every pair of audio files. Frame-by-frame cosine similarity was calculated on the aligned timecourses using the frame numbers of the target audio file as reference. Similarities were then averaged within the 4 time windows of interest separately for each layer.
+
+### Eye-tracking data pre-processing
+
+The x and y coordinates of participants' gaze were continuously recorded during each trial of the experiment. Eye gaze data were pre-processed and analyzed using custom `R` scripts. Each fixation was categorized in terms of whether it fell into one of the four regions of interest (ROI): the four quadrants of the display. In order to visualize the full timecourse of eye-gaze during word recognition, fixations were timelocked to the onset of the critical word in the audio instruction (e.g., "beaker"). A binary fixation measure for each ROI was computed for every 20ms bin, starting 200ms before the onset of the critical word and ending 2s after the onset of the critical word. For analysis, fixation durations were calculated per trial for each ROI in four time windows of interest, reflecting how much total time was spent on each of the ROIs within that time window per trial. These were then converted to proportions by dividing each ROI's duration by the summed total duration across all ROIs. The four time windows of interest were determined by critical moments in the audio stimulus (detailed above) and were offset by 200ms to account for oculomotor delay. 
+
+Trials with poor tracking quality were defined as those in which a fixation to any one of the 4 ROIs was recorded in fewer than 50% of the 10ms timebins. These trials were removed before analysis or visualization. This affected `r round(prop_trials_with_poor_track*100,1)`% of trials. Proportion of low track quality trials per participant ranged from `r round(min_prop_trials_with_poor_track_by_subj*100, 1)`% to `r round(max_prop_trials_with_poor_track_by_subj*100, 1)`%.
+
+### Modeling
+
+To estimate $\tau$ values from the eye-tracking data, the Bayesian belief updating model was implemented in Stan [@carpenterStanProbabilisticProgramming2017]. Sampling was done using the `cmdstanr` interface [@gabry2025cmdstanr]. Fixation duration proportions were averaged across subjects and trial orders resulting in a 4-dimensional vector of average fixation duration proportions for each item in each block type per time window. These average fixation duration proportions were then transformed to prevent values of exactly 1 or 0 while ensuring that they summed to 1. This allowed the allocation of gaze to the 4 ROIs to be modeled using a Dirichlet distribution. Sampling was run using 4 MCMC chains for 2000 iterations (1000 discarded for warm-up). $\hat{R}$ values were 1.00 for all parameters and there were no divergent transitions. Weakly informative priors were used for the concentration parameter of the Dirichlet distribution ($log(\phi) \sim Normal(log(50), 1)$) and the noise parameter ($log(\tau) \sim Normal(0, 1)$). To assess robustness, the model was refit with an alternate prior specification ($log(\phi) \sim exponential(0.1)$, $log(\tau) \sim Normal(1, 2)$) and the posterior estimates were largely unchanged.
+
+
+# Acknowledgments
+
+I am grateful to Michael Spivey and Cory Shain for very helpful discussions regarding this work, as well as the audience of the 2026 Human Sentence Processing conference at MIT where an early version of this work was first presented. I am also grateful for many fruitful discussions about the Noisy Channel framework to Roger Levy, Ted Gibson, Moshe Poliak, Thomas Clark, Peng Qian, and Sihan Chen. I thank Renisha Singh and Saloni Naik for help with data collection and Xinzhu Fang for assistance in selecting materials for the eye-tracking study. 
+Finally, I am grateful to the National Science Foundation for supporting this work through a CAREER award (BCS #2336304).
+
+\newpage
+
+# References
+
+::: {#refs custom-style="Bibliography"}
+:::

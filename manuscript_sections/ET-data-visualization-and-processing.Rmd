@@ -1,0 +1,462 @@
+```{r, warning=FALSE}
+library(tidyverse)
+library(patchwork)
+library(magick)
+library(cowplot)
+```
+
+```{r read in audio information}
+AUDIO_STIM_INFO_2 = '../data/vwp_noisy_speech_onsets_tier2.txt'
+
+aud_stim_info2 = read_tsv(AUDIO_STIM_INFO_2) %>%
+  mutate(Filename = str_c(Filename, '.wav'),
+         OnsetMS = Onset*1000,
+         OffsetMS = OnsetMS+(Duration*1000)) %>%
+  pivot_wider(names_from = Segmentlabel, values_from = c(-Filename, -Segmentlabel))
+
+max_dur_pre_disamb = max(aud_stim_info2$Duration_pre*1000) # 433ms
+max_dur_post_disamb = max(aud_stim_info2$Duration_post*1000) # 409ms
+
+```
+
+```{r read timecourse data}
+ET_timecourse_data_onset_no_EA = read_csv('../data/E1/ET_timecourse_data_2026-06-10.csv') %>% 
+  mutate(EXPT = 'noEA')
+
+ET_timecourse_data_onset_EA_block1 = read_csv('../data/E2/ET_timecourse_data_noisy_2026-06-10.csv') %>% 
+  mutate(EXPT = 'EA',
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+
+ET_timecourse_data_onset_EA_block2 = read_csv('../data/E2/ET_timecourse_data_2026-06-10.csv') %>%
+  mutate(EXPT = 'EA',
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+
+```
+
+```{r}
+# combining all timecourse data aligned at critical word onset
+ET_timecourse_data_onset = bind_rows(ET_timecourse_data_onset_no_EA, ET_timecourse_data_onset_EA_block1, ET_timecourse_data_onset_EA_block2) %>% 
+  mutate(
+    subjID = paste0(EXPT,str_pad(subnum, width = 2, pad = "0")),
+    target_fix = case_when(
+      gaze_location == 'TL' & TL == Target ~ 1,
+      gaze_location == 'TR' & TR == Target ~ 1,
+      gaze_location == 'BL' & BL == Target ~ 1,
+      gaze_location == 'BR' & BR == Target ~ 1,
+      TRUE ~ 0),
+    cohort_fix = case_when(
+      gaze_location == 'TL' & TL == Cohort ~ 1,
+      gaze_location == 'TR' & TR == Cohort ~ 1,
+      gaze_location == 'BL' & BL == Cohort ~ 1,
+      gaze_location == 'BR' & BR == Cohort ~ 1,
+      TRUE ~ 0),
+    rhyme_fix = case_when(
+      gaze_location == 'TL' & TL == Rhyme ~ 1,
+      gaze_location == 'TR' & TR == Rhyme ~ 1,
+      gaze_location == 'BL' & BL == Rhyme ~ 1,
+      gaze_location == 'BR' & BR == Rhyme ~ 1,
+      TRUE ~ 0),
+    dist_fix = case_when(
+      gaze_location == 'TL' & TL != Target & TL != Cohort & TL != Rhyme ~ 1,
+      gaze_location == 'TR' & TR != Target & TR != Cohort & TR != Rhyme ~ 1,
+      gaze_location == 'BL' & BL != Target & BL != Cohort & BL != Rhyme ~ 1,
+      gaze_location == 'BR' & BR != Target & BR != Cohort & BR != Rhyme ~ 1,
+      TRUE ~ 0),
+    adj_dist_fix = if_else(
+      Condition == 'No Competition',
+      dist_fix/3,
+      dist_fix/2
+    ),
+    total_fix = target_fix + cohort_fix + rhyme_fix + dist_fix,
+    click_correct = case_when(
+      ClickLoc == 'TL' & TL == Target ~ 1,
+      ClickLoc == 'TR' & TR == Target ~ 1,
+      ClickLoc == 'BL' & BL == Target ~ 1,
+      ClickLoc == 'BR' & BR == Target ~ 1,
+      TRUE ~ 0),
+    BlockCondOrder = case_when(
+      BlockCond == "intact" & BlockOrder == "b0" & EXPT == "noEA" ~ "Intact First",
+      BlockCond == "noisy" & BlockOrder == "b1" & EXPT == "noEA" ~ "Intact First",
+      BlockCond == "intact" & BlockOrder == "b1" & EXPT == "noEA" ~ "Noisy First - no EA",
+      BlockCond == "noisy" & BlockOrder == "b0" & EXPT == "noEA" ~ "Noisy First - no EA",
+      BlockCond == "intact" & BlockOrder == "b1" & EXPT == "EA" ~ "Noisy First - EA",
+      BlockCond == "noisy" & BlockOrder == "b0" & EXPT == "EA" ~ "Noisy First - EA",
+      TRUE ~ "error"
+    )) 
+```
+
+```{r read 4 tw dur data}
+ET_dur_data_t0_noEA = read_csv('../data/E1/ET_duration_data_t0_2026-06-10.csv') %>% 
+  mutate(tw = "t0",
+         EXPT = "noEA")
+ET_dur_data_t1_noEA = read_csv('../data/E1/ET_duration_data_t1_2026-06-10.csv') %>% 
+  mutate(tw = "t1",
+         EXPT = "noEA")
+ET_dur_data_t2_noEA = read_csv('../data/E1/ET_duration_data_t2_2026-06-10.csv') %>% 
+  mutate(tw = "t2",
+         EXPT = "noEA")
+ET_dur_data_t3_noEA = read_csv('../data/E1/ET_duration_data_t3_2026-06-10.csv') %>% 
+  mutate(tw = "t3",
+         EXPT = "noEA")
+
+ET_dur_data_t0_EA = read_csv('../data/E2/ET_duration_data_t0_2026-06-10.csv') %>% 
+  mutate(tw = "t0",
+         EXPT = "EA",
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+ET_dur_data_t1_EA = read_csv('../data/E2/ET_duration_data_t1_2026-06-10.csv') %>% 
+  mutate(tw = "t1",
+         EXPT = "EA",
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+ET_dur_data_t2_EA = read_csv('../data/E2/ET_duration_data_t2_2026-06-10.csv') %>% 
+  mutate(tw = "t2",
+         EXPT = "EA",
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+ET_dur_data_t3_EA = read_csv('../data/E2/ET_duration_data_t3_2026-06-10.csv') %>% 
+  mutate(tw = "t3",
+         EXPT = "EA",
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+ET_dur_data_noisy_t0_EA = read_csv('../data/E2/ET_duration_data_noisy_t0_2026-06-10.csv') %>% 
+  mutate(tw = "t0",
+         EXPT = "EA",
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+ET_dur_data_noisy_t1_EA = read_csv('../data/E2/ET_duration_data_noisy_t1_2026-06-10.csv') %>% 
+  mutate(tw = "t1",
+         EXPT = "EA",
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+ET_dur_data_noisy_t2_EA = read_csv('../data/E2/ET_duration_data_noisy_t2_2026-06-10.csv') %>% 
+  mutate(tw = "t2",
+         EXPT = "EA",
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+ET_dur_data_noisy_t3_EA = read_csv('../data/E2/ET_duration_data_noisy_t3_2026-06-10.csv') %>% 
+  mutate(tw = "t3",
+         EXPT = "EA",
+         BlockOrder = if_else(BlockCond == 'noisy', 'b0','b1'))
+
+ET_dur_data_4t = bind_rows(ET_dur_data_t0_noEA,
+                           ET_dur_data_t1_noEA,
+                           ET_dur_data_t2_noEA,
+                           ET_dur_data_t3_noEA,
+                           ET_dur_data_t0_EA,
+                           ET_dur_data_t1_EA,
+                           ET_dur_data_t2_EA,
+                           ET_dur_data_t3_EA,
+                           ET_dur_data_noisy_t0_EA,
+                           ET_dur_data_noisy_t1_EA,
+                           ET_dur_data_noisy_t2_EA,
+                           ET_dur_data_noisy_t3_EA) %>% 
+  mutate(subjID = paste0(EXPT,str_pad(subnum, width = 2, pad = "0"))) %>% 
+  mutate(target_dur = case_when(
+    gaze_location == 'TL' & TL == Target ~ event_dur,
+    gaze_location == 'TR' & TR == Target ~ event_dur,
+    gaze_location == 'BL' & BL == Target ~ event_dur,
+    gaze_location == 'BR' & BR == Target ~ event_dur,
+    TRUE ~ 0),
+    cohort_dur = case_when(
+    gaze_location == 'TL' & TL == Cohort ~ event_dur,
+    gaze_location == 'TR' & TR == Cohort ~ event_dur,
+    gaze_location == 'BL' & BL == Cohort ~ event_dur,
+    gaze_location == 'BR' & BR == Cohort ~ event_dur,
+    TRUE ~ 0),
+    rhyme_dur = case_when(
+    gaze_location == 'TL' & TL == Rhyme ~ event_dur,
+    gaze_location == 'TR' & TR == Rhyme ~ event_dur,
+    gaze_location == 'BL' & BL == Rhyme ~ event_dur,
+    gaze_location == 'BR' & BR == Rhyme ~ event_dur,
+    TRUE ~ 0),
+    dist_dur = case_when(
+    gaze_location == 'TL' & TL != Target & TL != Cohort & TL != Rhyme ~ event_dur,
+    gaze_location == 'TR' & TR != Target & TR != Cohort & TR != Rhyme ~ event_dur,
+    gaze_location == 'BL' & BL != Target & BL != Cohort & BL != Rhyme ~ event_dur,
+    gaze_location == 'BR' & BR != Target & BR != Cohort & BR != Rhyme ~ event_dur,
+    TRUE ~ 0),
+    click_correct = case_when(
+      ClickLoc == 'TL' & TL == Target ~ 1,
+      ClickLoc == 'TR' & TR == Target ~ 1,
+      ClickLoc == 'BL' & BL == Target ~ 1,
+      ClickLoc == 'BR' & BR == Target ~ 1,
+      TRUE ~ 0),
+    BlockCondOrder = case_when(
+      BlockCond == "intact" & BlockOrder == "b0" & EXPT == "noEA" ~ "Intact First",
+      BlockCond == "noisy" & BlockOrder == "b1" & EXPT == "noEA" ~ "Intact First",
+      BlockCond == "intact" & BlockOrder == "b1" & EXPT == "noEA" ~ "Noisy First - no EA",
+      BlockCond == "noisy" & BlockOrder == "b0" & EXPT == "noEA" ~ "Noisy First - no EA",
+      BlockCond == "intact" & BlockOrder == "b1" & EXPT == "EA" ~ "Noisy First - EA",
+      BlockCond == "noisy" & BlockOrder == "b0" & EXPT == "EA" ~ "Noisy First - EA",
+      TRUE ~ "error"
+    ))
+
+```
+
+```{r subj accuracy}
+
+subj_filler_accuracy = ET_dur_data_4t %>% 
+  filter(Condition %in% c("Filler 1","Filler 2","Filler 3")) %>% 
+  group_by(subjID) %>% 
+  summarise(acc = mean(click_correct))
+
+keep_subjects = subj_filler_accuracy %>% 
+  filter(acc >.9) %>% # excludes noEA34
+  pull(subjID)
+```
+
+```{r, eval = FALSE}
+# checking eye-tracking quality
+ggplot(ET_timecourse_data_onset %>% 
+         filter(EXPT == "noEA",
+                !Condition %in% c("Filler 1","Filler 2","Filler 3","Practice")))+
+   stat_summary(aes(x=time_bin, y=target_fix), geom='line', fun="mean", linewidth=1)+
+  geom_hline(aes(yintercept = 0.5), linewidth=1, color = "red")+
+  facet_wrap(~subjID)+
+  coord_cartesian(xlim = c(-100, 1200 ))+
+  theme_bw(base_size = 20)
+
+# noEA13 never reach 75% fixations to target
+```
+```{r, eval = FALSE}
+# for diagnostics
+ggplot(ET_timecourse_data_onset %>% 
+         filter(EXPT == "EA",
+                !Condition %in% c("Filler 1","Filler 2","Filler 3","Practice")))+
+   stat_summary(aes(x=time_bin, y=target_fix), geom='line', fun="mean", linewidth=1)+
+  geom_hline(aes(yintercept = 0.5), linewidth=1, color = "red")+
+  facet_wrap(~subjID)+
+  coord_cartesian(xlim = c(-100, 1200 ))+
+  theme_bw(base_size = 20)
+
+# EA26, EA30 all never reach 75% fixations to target
+```
+```{r, eval = FALSE}
+# for diagnostics
+ggplot(ET_timecourse_data_onset %>% 
+         filter(EXPT == "EA",!Condition %in% c("Filler 1","Filler 2","Filler 3","Practice")))+
+  stat_summary(aes(x=trial_nums, y=total_fix))+
+ # geom_point(aes(x=time_bin, y=total_fix))+
+  geom_hline(aes(yintercept = 0.5), linewidth=1, color = "red")+
+  facet_grid(BlockOrder~subjID)+
+  #coord_cartesian(xlim = c(-100, 1200 ))+
+  theme_bw(base_size = 20)
+
+# some subjects have several trials where >50% of timebins have no fixations to any location on the screen
+```
+
+```{r check for poor ET data}
+
+ET_quality_by_trial = ET_timecourse_data_onset %>% 
+  filter(!Condition %in% c("Filler 1","Filler 2","Filler 3","Practice")) %>% 
+  group_by(subjID, BlockOrder, trial_nums) %>% 
+  summarize(prop_tracked = mean(total_fix)) 
+
+prop_trials_with_poor_track = mean(ET_quality_by_trial$prop_tracked < .5)
+
+ET_quality_by_subs = ET_quality_by_trial %>% 
+  group_by(subjID) %>% 
+  summarize(prop_bad_trials = mean( prop_tracked < .5 ))
+  
+ #hist(ET_quality_by_subs$prop_bad_trials)
+
+mean_prop_trials_with_poor_track_by_subj = mean(ET_quality_by_subs$prop_bad_trials)
+max_prop_trials_with_poor_track_by_subj = max(ET_quality_by_subs$prop_bad_trials)
+min_prop_trials_with_poor_track_by_subj = min(ET_quality_by_subs$prop_bad_trials)
+
+
+```
+
+```{r ET timecourse crit}
+# removing non-critical trials/bad data from timecourse
+
+ET_timecourse_data_onset_crit = ET_timecourse_data_onset %>% 
+  filter(!Condition %in% c("Filler 1","Filler 2","Filler 3","Practice")) %>% 
+  left_join(ET_quality_by_trial, by = c("subjID", "BlockOrder", "trial_nums")) %>% 
+  filter(click_correct ==1,
+         subjID %in% keep_subjects,
+         prop_tracked >= .5) %>% 
+  mutate(Condition = factor(Condition,levels = c("No competition", "Cohort competition", "Rhyme competition")))
+
+```
+
+```{r averaging timecourse over items}
+
+ET_timecourse_data_onset_crit_avg = ET_timecourse_data_onset_crit %>% 
+  group_by(EXPT, subjID, Condition, BlockOrder,  BlockCond, BlockCondOrder, time_bin) %>% 
+  summarise(target_fix = mean(target_fix, na.rm=T),
+            cohort_fix = mean(cohort_fix, na.rm=T),
+            rhyme_fix = mean(rhyme_fix, na.rm=T),
+            dist_fix = mean(dist_fix, na.rm=T)) %>% 
+  mutate(dist_fix_adj = if_else(Condition=="No competition", dist_fix/3,dist_fix/2))%>% 
+  mutate(target_advantage = case_when(
+    Condition == "No competition" ~ target_fix - dist_fix_adj,
+    Condition == "Cohort competition" ~ target_fix - cohort_fix,
+    Condition == "Rhyme competition" ~ target_fix - rhyme_fix
+  ))
+```
+
+```{r ET 4tw dur data crit}
+# removing non-critical trials/bad data from 4tw
+
+ET_dur_data_4t_crit = ET_dur_data_4t %>% 
+  filter(!Condition %in% c("Filler 1","Filler 2","Filler 3","Practice")) %>% 
+  left_join(ET_quality_by_trial, by = c("subjID", "BlockOrder", "trial_nums")) %>% 
+  filter(click_correct ==1,
+         subjID %in% keep_subjects,
+         prop_tracked >= .5) %>% 
+  group_by(EXPT, tw, subjID, BlockOrder, trial_nums, BlockNum, BlockCond, BlockCondOrder, TrialOrder, ItemNum, Target, Cohort, Rhyme, Condition, total_dur) %>% 
+  summarize(sum_target_dur = sum(target_dur),
+            sum_cohort_dur = sum(cohort_dur),
+            sum_rhyme_dur = sum(rhyme_dur),
+            sum_dist_dur = sum(dist_dur)) %>% 
+  mutate(target_prop = sum_target_dur/total_dur,
+         cohort_prop = sum_cohort_dur/total_dur,
+         rhyme_prop = sum_rhyme_dur/total_dur,
+         dist_prop = if_else(Condition == 'No competition', (sum_dist_dur/3)/total_dur, (sum_dist_dur/2)/total_dur),
+         TA = case_when(
+           Condition == "Cohort competition" ~ target_prop - cohort_prop,
+           Condition == "No competition" ~ target_prop - dist_prop,
+           Condition == "Rhyme competition" ~ target_prop - rhyme_prop
+         ),
+         BlockCondEXPT = paste0(BlockCond,"_",EXPT),
+         Condition = factor(Condition,levels = c("No competition", "Cohort competition", "Rhyme competition"))) 
+```
+
+
+
+
+```{r viz timecourse }
+
+# dummy plot for legend
+legend_data <- data.frame(
+  Condition = c("No competition", "No competition", 
+                "Cohort competition", "Cohort competition", 
+                "Rhyme competition", "Rhyme competition"),
+  ROI = c("Target", "Distractor", "Target", "Competitor", "Target", "Competitor"),
+  # Create a unique group name for each row to bind color + line type together
+  Label = c("No Competition - Target", 
+            "No Competition - Distractor", 
+            "Early Competition - Target", 
+            "Early Competition - Competitor", 
+            "Late competition - Target", 
+            "Late Competition - Competitor"),
+  x = 1:6, y = 1:6
+)
+
+legend_data$Label <- factor(legend_data$Label, levels = legend_data$Label)
+
+p_legend_source <- ggplot(legend_data, 
+                          aes(x = x, y = y, color = Label, linetype = Label)) + 
+  geom_line(linewidth = 1) +
+  scale_color_manual(
+    name = "",
+    values = c(
+      "No Competition - Target"         = "darkgrey",
+      "No Competition - Distractor"     = "darkgrey",
+      "Early Competition - Target"     = "#e41a1c",
+      "Early Competition - Competitor" = "#e41a1c",
+      "Late competition - Target"      = "cornflowerblue",
+      "Late Competition - Competitor"  = "cornflowerblue"
+    )
+  ) +
+  scale_linetype_manual(
+    name = "",
+    values = c(
+      "No Competition - Target"         = "solid",
+      "No Competition - Distractor"     = "longdash",
+      "Early Competition - Target"     = "solid",
+      "Early Competition - Competitor" = "longdash",
+      "Late competition - Target"      = "solid",
+      "Late Competition - Competitor"  = "longdash"
+    )
+  ) +
+  theme_classic() +
+  theme(
+    legend.key.width = unit(3, "line")     # Keep the wide lines for dashed visibility
+  ) +
+  guides(color = guide_legend(ncol = 1)) # Force a single column
+
+# Extract the new fixed legend grob
+clean_legend <- cowplot::get_legend(p_legend_source)
+
+p_cohort<-ggplot(ET_timecourse_data_onset_crit_avg %>% filter(Condition != "Rhyme competition"))+
+  stat_summary(aes(x=time_bin, y=target_fix, fill=Condition), geom='ribbon',fun.data="mean_cl_boot", alpha = .5)+
+  stat_summary(aes(x=time_bin, y=target_fix, color=Condition), geom='line', fun="mean", linewidth=1)+
+  stat_summary(data = ET_timecourse_data_onset_crit_avg %>% filter(Condition == "Cohort competition"), 
+               aes(x=time_bin, y=cohort_fix, fill=Condition), geom='ribbon', fun.data="mean_cl_boot", alpha = .5)+
+  stat_summary(data = ET_timecourse_data_onset_crit_avg %>% filter(Condition == "Cohort competition"), 
+               aes(x=time_bin, y=cohort_fix, color=Condition), geom='line', fun="mean", linetype = 'longdash', linewidth=1)+
+  stat_summary(data = ET_timecourse_data_onset_crit_avg %>% filter(Condition == "No competition"), 
+               aes(x=time_bin, y=dist_fix_adj, fill=Condition), geom='ribbon', fun.data="mean_cl_boot", alpha = .5)+
+  stat_summary(data = ET_timecourse_data_onset_crit_avg %>% filter(Condition == "No competition"), 
+               aes(x=time_bin, y=dist_fix_adj, color=Condition), geom='line', fun="mean", linetype = 'longdash', linewidth=1)+
+  scale_color_manual(values = c("darkgrey", '#e41a1c'))+
+  scale_fill_manual(values = c("darkgrey", '#e41a1c'))+
+  labs(y="Proportion of Fixations", x="Time relative to word onset (ms)")+
+  geom_vline(aes(xintercept=200), linetype = "dashed")+
+  coord_cartesian(xlim = c(-100, max_dur_pre_disamb+max_dur_post_disamb+200 ), ylim = c(0,.82))+
+  theme_classic()+
+  theme(legend.position = "none")
+
+
+
+p_rhyme<-ggplot(ET_timecourse_data_onset_crit_avg %>% filter(Condition != "Cohort competition"))+
+  stat_summary(aes(x=time_bin, y=target_fix, fill=Condition), geom='ribbon',fun.data="mean_cl_boot", alpha = .5)+
+  stat_summary(aes(x=time_bin, y=target_fix, color=Condition), geom='line', fun="mean", linewidth=1)+
+  stat_summary(data = ET_timecourse_data_onset_crit_avg %>% filter(Condition == "Rhyme competition"), 
+               aes(x=time_bin, y=rhyme_fix, fill=Condition), geom='ribbon', fun.data="mean_cl_boot", alpha = .5)+
+  stat_summary(data = ET_timecourse_data_onset_crit_avg %>% filter(Condition == "Rhyme competition"), 
+               aes(x=time_bin, y=rhyme_fix, color=Condition), geom='line', fun="mean", linetype = 'longdash', linewidth=1)+
+  stat_summary(data = ET_timecourse_data_onset_crit_avg %>% filter(Condition == "No competition"), 
+               aes(x=time_bin, y=dist_fix_adj, fill=Condition), geom='ribbon', fun.data="mean_cl_boot", alpha = .5)+
+  stat_summary(data = ET_timecourse_data_onset_crit_avg %>% filter(Condition == "No competition"), 
+               aes(x=time_bin, y=dist_fix_adj, color=Condition), geom='line', fun="mean", linetype = 'longdash', linewidth=1)+
+  scale_color_manual(values = c("darkgrey", 'cornflowerblue'))+
+  scale_fill_manual(values = c("darkgrey", 'cornflowerblue'))+
+  #scale_linetype_manual(values = c("solid", "dashed"), labels = c("Target", "Competitor"), name = "ROI")+
+  labs(y="Proportion of Fixations", x="Time relative to word onset (ms)")+
+  geom_vline(aes(xintercept=200), linetype = "dashed")+
+  coord_cartesian(xlim = c(-100, max_dur_pre_disamb+max_dur_post_disamb+200 ), ylim = c(0,0.82))+
+  theme_classic()+
+  theme(legend.position = "none")
+
+
+```
+
+
+(ref:expt-fig-caption) Eye-tracking experiment design (top) and timecourse of eye fixations to ROIs across conditions (bottom). Each critical auditory instruction (e.g., "Click on the beaker") was held constant across trials with different displays reflecting different visual context conditions (No competition, Early competition, Late competition). Eye-gaze is aligned to the onset of the critical referent (e.g., "beaker"). Dashed line indicates 200ms after onset. Due to oculomotor delay, fixations earlier than 200ms after stimulus onset are unlikely to reflect processing of the stimulus. Fixations to the target are highest when there are no phonological competitors in the display. Early competition results in reduced target fixations early in the time window, and late competition results in reduced target fixations later in the time window.
+
+```{r expt-fig, fig.cap = "(ref:expt-fig-caption)", fig.width = 8, fig.height = 7, dpi = 300}
+
+img_raw <- magick::image_read("image_files/experiment_design2.001.png")
+
+# Automatically trim any native whitespace/transparent borders around the PNG
+img_raw <- magick::image_trim(img_raw)
+
+# Use magick's built-in ggplot converter to preserve aspect ratio automatically
+p_image <- magick::image_ggplot(img_raw)
+
+
+# Stretch image to the left edge
+p_image_final <- free(p_image, side = "l")
+
+# Define the grid allocation map
+# 'A' represents your top-row image spanning three columns
+# 'B', 'C', and 'D' represent your plots and legend below it
+my_design <- "
+  AAA
+  BCD
+"
+
+final_layout <- wrap_plots(
+  A = p_image_final, 
+  B = p_cohort, 
+  C = p_rhyme, 
+  D = wrap_elements(clean_legend), 
+  design = my_design
+) + 
+plot_layout(
+  heights = c(2, 1),                   
+  widths  = c(1, 1, 1)         
+)
+
+final_layout
+```
+
+
+

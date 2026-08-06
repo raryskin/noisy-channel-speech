@@ -1,0 +1,1395 @@
+
+```{r setup for stan}
+library(tidyverse)
+library(ggrepel)
+library(bayesplot)
+library(tidybayes)
+library(cmdstanr)
+library(loo)
+options(mc.cores = 4)
+```
+
+
+```{r}
+
+trial_info = read_csv("../data/trial_info.csv") %>% 
+  filter(!str_detect(Condition, "Filler")) 
+
+sim_by_layer_tw = read_csv("./data/average_dtw_similarities_by_layer_by_timewindows.csv")
+
+```
+```{r}
+
+# prepping ET data for Stan format
+
+ET_dur_data_4t_crit2 = ET_dur_data_4t %>% 
+  filter(!Condition %in% c("Filler 1","Filler 2","Filler 3","Practice")) %>% 
+  left_join(ET_quality_by_trial, by = c("subjID", "BlockOrder","trial_nums")) %>% 
+  filter(click_correct ==1,
+         subjID %in% keep_subjects,
+         prop_tracked >= .5) %>% 
+  left_join(trial_info, by = c("ItemNum", "Condition")) %>% 
+  mutate( TL_role = case_when(
+    TL == Pic1 ~ "target",
+    TL == Pic2 ~ "competitor",
+    TL == Pic3 ~ "dist1",
+    TL == Pic4 ~ "dist2"
+  ),
+  TR_role = case_when(
+    TR == Pic1 ~ "target",
+    TR == Pic2 ~ "competitor",
+    TR == Pic3 ~ "dist1",
+    TR == Pic4 ~ "dist2"
+  ),
+  BL_role = case_when(
+    BL == Pic1 ~ "target",
+    BL == Pic2 ~ "competitor",
+    BL == Pic3 ~ "dist1",
+    BL == Pic4 ~ "dist2"
+  ),
+  BR_role = case_when(
+    BR == Pic1 ~ "target",
+    BR == Pic2 ~ "competitor",
+    BR == Pic3 ~ "dist1",
+    BR == Pic4 ~ "dist2"
+  ),
+  target_dur2 = if_else(
+    gaze_location == 'TL' & TL_role == "target" |
+      gaze_location == 'TR' & TR_role == "target" |
+      gaze_location == 'BL' & BL_role == "target" |
+      gaze_location == 'BR' & BR_role == "target",
+    event_dur, 0
+  ),
+  compet_dur = if_else(
+    gaze_location == 'TL' & TL_role == "competitor" |
+      gaze_location == 'TR' & TR_role == "competitor" |
+      gaze_location == 'BL' & BL_role == "competitor" |
+      gaze_location == 'BR' & BR_role == "competitor",
+    event_dur, 0
+  ),
+  dist1_dur = if_else(
+    gaze_location == 'TL' & TL_role == "dist1" |
+      gaze_location == 'TR' & TR_role == "dist1" |
+      gaze_location == 'BL' & BL_role == "dist1" |
+      gaze_location == 'BR' & BR_role == "dist1",
+    event_dur, 0
+  ),
+  dist2_dur = if_else(
+    gaze_location == 'TL' & TL_role == "dist2" |
+      gaze_location == 'TR' & TR_role == "dist2" |
+      gaze_location == 'BL' & BL_role == "dist2" |
+      gaze_location == 'BR' & BR_role == "dist2",
+    event_dur, 0
+  ),
+  BlockType = case_when(
+    BlockOrder == "b0" & BlockCond == "intact" ~ 1,
+    BlockOrder == "b0" & BlockCond == "noisy" ~ 2,
+    BlockOrder == "b1" & BlockCond == "noisy" ~ 3,
+    BlockOrder == "b1" & BlockCond == "intact" & EXPT == "noEA" ~ 4,
+    BlockOrder == "b1" & BlockCond == "intact" & EXPT == "EA" ~ 5,
+    TRUE ~ 9999
+  )
+  ) %>% 
+  group_by(BlockType, tw, subjID, trial_nums, BlockOrder, BlockNum.x, TrialOrder, ItemNum, Target.x, Cohort.x, Rhyme.x, Pic1, Pic2, Pic3, Pic4, Condition, total_dur) %>% 
+  summarize(sum_target_dur = sum(target_dur2),
+            sum_compet_dur = sum(compet_dur),
+            sum_dist1_dur = sum(dist1_dur),
+            sum_dist2_dur = sum(dist2_dur)) %>% 
+  mutate(target_prop = sum_target_dur/total_dur,
+         compet_prop = sum_compet_dur/total_dur,
+         dist1_prop = sum_dist1_dur/total_dur,
+         dist2_prop = sum_dist2_dur/total_dur
+  ) %>% 
+  arrange(subjID, BlockOrder, TrialOrder, tw)
+
+# Squeeze the proportions to avoid exact 0s and 1s (Dirichlet requirement)
+squeeze <- function(x) { (x * 0.999) + 0.0005 }
+
+ET_data_by_items_conds_tws = ET_dur_data_4t_crit2 %>% 
+  group_by(ItemNum, Condition, BlockType, tw, Pic1, Pic2, Pic3, Pic4) %>% 
+  summarize(mean_target_prop = mean(target_prop), 
+            mean_compet_prop = mean(compet_prop), 
+            mean_dist1_prop = mean(dist1_prop),
+            mean_dist2_prop = mean(dist2_prop)) %>% 
+  #left_join(trial_info, by = c("ItemNum", "Condition")) %>% 
+  mutate(sim_target = .99) %>% 
+  full_join(sim_by_layer_tw, 
+            by = c("Pic1" = "fileA", "Pic2" = "fileB", "tw" = "tw"),
+            relationship = "many-to-many") %>% 
+  rename(sim_compet = mean_sim) %>% 
+  full_join(sim_by_layer_tw, 
+            by = c("Pic1" = "fileA", "Pic3" = "fileB", "tw" = "tw", "layer" = "layer")) %>%
+  rename(sim_dist1 = mean_sim) %>% 
+  full_join(sim_by_layer_tw, 
+            by = c("Pic1" = "fileA", "Pic4" = "fileB", "tw" = "tw", "layer" = "layer")) %>%
+  rename(sim_dist2 = mean_sim) %>% 
+  filter( !is.na(ItemNum)) %>%  # NAs added during joining
+  mutate(sq_target = squeeze(mean_target_prop),
+         sq_comp = squeeze(mean_compet_prop),
+         sq_dist1 = squeeze(mean_dist1_prop),
+         sq_dist2 = squeeze(mean_dist2_prop),
+         total_sq = sq_target + sq_comp + sq_dist1 + sq_dist2,
+         y_col1 = sq_target / total_sq, # normalizing
+         y_col2 = sq_comp / total_sq,
+         y_col3 = sq_dist1 / total_sq,
+         y_col4 = 1 - (y_col1 + y_col2 + y_col3) # forcing cols to add up to 1 for dirichlet (floating point problems)
+         ) %>% 
+  arrange(layer, BlockType, ItemNum, Condition, tw ) 
+```
+
+```{r, eval = F}
+model <- cmdstan_model("stan_files/model_log_domain_weak_priors.stan") 
+```
+
+
+```{r loop over layers, eval = F}
+# loop through sims for all layers to see which layer's similarity values fit data best
+
+num_layers <- max(ET_data_by_items_conds_tws$layer)
+loo_results <- list()
+
+# Loop through all layers
+for (L in 1:num_layers) {
+  
+  print(paste("Fitting Layer", L))
+  
+  ET_data_by_items_conds_tws_1layer = ET_data_by_items_conds_tws %>% 
+  filter(layer == L)
+
+  
+    # 5. Bind it together
+    y_matrix_L <- cbind(ET_data_by_items_conds_tws_1layer$y_col1, 
+                      ET_data_by_items_conds_tws_1layer$y_col2, 
+                      ET_data_by_items_conds_tws_1layer$y_col3, 
+                      ET_data_by_items_conds_tws_1layer$y_col4)
+    
+    # 3. Create the Similarity Matrix
+    sim_matrix_L <- cbind(
+      ET_data_by_items_conds_tws_1layer$sim_target,
+      ET_data_by_items_conds_tws_1layer$sim_compet,
+      ET_data_by_items_conds_tws_1layer$sim_dist1,
+      ET_data_by_items_conds_tws_1layer$sim_dist2
+    )
+    
+    # create the data list
+    stan_data_L <- list(
+      N = nrow(ET_data_by_items_conds_tws_1layer),
+      sim = sim_matrix_L,
+      timestep = parse_number(ET_data_by_items_conds_tws_1layer$tw)+1,
+      y = y_matrix_L,
+      num_groups = max(ET_data_by_items_conds_tws_1layer$BlockType),
+      group_id = ET_data_by_items_conds_tws_1layer$BlockType
+    )
+  
+  # Fit the model
+  fit_L <- model$sample(data = stan_data_L, chains = 4, refresh = 0)
+  
+  # Extract the pointwise log-likelihood and compute LOO
+  layer_log_lik_matrix <- fit_L$draws("log_lik", format = "matrix")
+  layer_loo <- loo(layer_log_lik_matrix)
+  
+  # Store the result
+  loo_results[[L]] <- layer_loo
+}
+
+saveRDS(loo_results,"rdata/loo_results2.rds")
+```
+
+```{r}
+loo_results = read_rds("rdata/loo_results2.rds")
+```
+
+
+```{r,warning=FALSE}
+
+# Compare all layers 
+comparison_L <- loo_compare(loo_results)
+#print(comparison_L)
+
+```
+
+```{r}
+comparison_df = as_tibble(comparison_L) %>% 
+  mutate(layer = parse_number(rownames(comparison_L)),
+         is_tied_with_best = abs(elpd_diff) <= 2 * se_diff 
+         )
+
+tied_models <- comparison_df %>% 
+  filter(is_tied_with_best == TRUE) 
+
+#print(tied_models)
+
+p_ELPD_model_layers<-ggplot(comparison_df)+
+  geom_line(aes(x = layer, y = elpd_loo), linewidth = 1)+
+  annotate(geom = 'segment', 
+           x = min(tied_models$layer), 
+           xend = max(tied_models$layer), 
+           y = Inf, yend = Inf , color ="red",
+           linewidth = 3)+
+  labs(x = "HuBERT layer", y = "ELPD LOO")+
+  theme_classic(base_size = 20)
+```
+
+```{r}
+# prepping data using average similarities from top layers
+
+ET_data_by_items_conds_tws_avglayer = ET_data_by_items_conds_tws %>% 
+  filter(layer %in% tied_models$layer) %>%  # 8,9,10
+  group_by(ItemNum, Condition, BlockType, tw, Pic1, Pic2, Pic3, Pic4, mean_target_prop, mean_compet_prop, mean_dist1_prop, mean_dist2_prop, y_col1, y_col2, y_col3, y_col4) %>% 
+  summarize(sim_avglayer_target = mean(sim_target),
+         sim_avglayer_compet = mean(sim_compet),
+         sim_avglayer_dist1 = mean(sim_dist1),
+         sim_avglayer_dist2 = mean(sim_dist2)) %>% 
+  arrange(BlockType, ItemNum, Condition, tw ) 
+
+
+```
+
+```{r}
+# create the data list
+y_matrix_avg <- cbind(ET_data_by_items_conds_tws_avglayer$y_col1, 
+                  ET_data_by_items_conds_tws_avglayer$y_col2, 
+                  ET_data_by_items_conds_tws_avglayer$y_col3, 
+                  ET_data_by_items_conds_tws_avglayer$y_col4)
+
+sim_matrix_avg <- cbind(
+  ET_data_by_items_conds_tws_avglayer$sim_avglayer_target,
+  ET_data_by_items_conds_tws_avglayer$sim_avglayer_compet,
+  ET_data_by_items_conds_tws_avglayer$sim_avglayer_dist1,
+  ET_data_by_items_conds_tws_avglayer$sim_avglayer_dist2
+)
+
+stan_data_avg <- list(
+  N = nrow(ET_data_by_items_conds_tws_avglayer),
+  sim = sim_matrix_avg,
+  timestep = parse_number(ET_data_by_items_conds_tws_avglayer$tw)+1,
+  y = y_matrix_avg,
+  num_groups = max(ET_data_by_items_conds_tws_avglayer$BlockType),
+  group_id = ET_data_by_items_conds_tws_avglayer$BlockType
+)
+```
+
+```{r, eval = F}
+# Fit the model to item-specific similarities averaged across the 3 best performing layers
+fit_avg <- model$sample(data = stan_data_avg, 
+                         chains = 4, parallel_chains = 4, 
+                         refresh = 0 ,
+                         output_dir = "stan_files/model_log_domain_weak_priors_avg" )
+
+saveRDS(fit_avg,"rdata/layer_avg_stan_model_fit.rds")
+```
+
+```{r fit stan model avg over layers}
+fit_avg = read_rds("rdata/layer_avg_stan_model_fit.rds")
+```
+
+```{r, eval = F}
+file.exists(fit_avg$output_files())
+
+```
+
+```{r loo1}
+# Extract the pointwise log-likelihood and compute LOO
+  log_lik_matrix_avg <- fit_avg$draws("log_lik", format = "matrix")
+  avg_loo <- loo(log_lik_matrix_avg)
+```
+
+```{r, eval = FALSE}
+bayesplot::mcmc_pairs(fit2_avg$draws(c("tau[1]","tau[2]","tau[3]","tau[4]","tau[5]","phi")))
+# no excessive tradeoff between phi and any tau/no identifiability issue
+
+fit_avg$diagnostic_summary() # no convergence issues
+```
+
+```{r get generic similarities}
+ET_data_by_items_conds_tws_same_sim = ET_data_by_items_conds_tws_avglayer %>% 
+  group_by(Condition, tw) %>% 
+  mutate(sim_generic_target = mean(sim_avglayer_target),
+         sim_generic_compet = mean(sim_avglayer_compet),
+         sim_generic_dist1 = mean(sim_avglayer_dist1),
+         sim_generic_dist2 = mean(sim_avglayer_dist2)) %>% 
+  arrange(BlockType, ItemNum, Condition, tw ) 
+```
+
+```{r}
+
+y_matrix_g <- cbind(ET_data_by_items_conds_tws_same_sim$y_col1, 
+                  ET_data_by_items_conds_tws_same_sim$y_col2, 
+                  ET_data_by_items_conds_tws_same_sim$y_col3, 
+                  ET_data_by_items_conds_tws_same_sim$y_col4)
+
+sim_matrix_g <- cbind(
+  ET_data_by_items_conds_tws_same_sim$sim_generic_target,
+  ET_data_by_items_conds_tws_same_sim$sim_generic_compet,
+  ET_data_by_items_conds_tws_same_sim$sim_generic_dist1,
+  ET_data_by_items_conds_tws_same_sim$sim_generic_dist2
+)
+
+# create the data list
+stan_data_g <- list(
+  N = nrow(ET_data_by_items_conds_tws_same_sim),
+  sim = sim_matrix_g,
+  timestep = parse_number(ET_data_by_items_conds_tws_same_sim$tw)+1,
+  y = y_matrix_g,
+  num_groups = max(ET_data_by_items_conds_tws_same_sim$BlockType),
+  group_id = ET_data_by_items_conds_tws_same_sim$BlockType
+)
+```
+
+```{r fit stan model with generic likelihoods, eval = F}
+# Fit the model with generic similarities based on the same best layers 
+fit_g <- model$sample(data = stan_data_g, chains = 4, parallel_chains = 4, refresh = 0, 
+                      output_dir = "stan_files/model_log_domain_weak_priors_g")
+saveRDS(fit_g,"rdata/generic_stan_model_fit2.rds")
+```
+
+```{r, eval = FALSE}
+bayesplot::mcmc_pairs(fit2_g$draws(c("tau[1]","tau[2]","tau[3]","tau[4]","tau[5]","phi")))
+# no excessive tradeoff between phi and any tau/no identifiability issue
+
+fit_g$diagnostic_summary() # all good
+```
+
+```{r}
+fit_g = read_rds("rdata/generic_stan_model_fit2.rds")
+```
+
+```{r}
+# Extract the pointwise log-likelihood and compute LOO
+  log_lik_matrix_g <- fit_g$draws("log_lik", format = "matrix")
+  g_loo <- loo(log_lik_matrix_g)
+```
+
+
+```{r loop over layers with generic similarities, eval = F}
+# loop through sims for all layers to see which layer's similarity values fit data best if you make similarities generic
+
+num_layers <- max(ET_data_by_items_conds_tws$layer)
+g_loo_results <- list()
+
+# Loop through all layers
+for (L in 1:num_layers) {
+  
+  print(paste("Fitting Layer", L))
+  
+  ET_data_by_items_conds_tws_1layer_g = ET_data_by_items_conds_tws %>% 
+  filter(layer == L) %>% 
+  group_by(Condition, tw) %>% 
+  mutate(sim_generic_target = mean(sim_target),
+         sim_generic_compet = mean(sim_compet),
+         sim_generic_dist1 = mean(sim_dist1),
+         sim_generic_dist2 = mean(sim_dist2)) %>% 
+  arrange(BlockType, ItemNum, Condition, tw ) 
+
+  
+    # 5. Bind it together
+    y_matrix_g_L <- cbind(ET_data_by_items_conds_tws_1layer_g$y_col1, 
+                      ET_data_by_items_conds_tws_1layer_g$y_col2, 
+                      ET_data_by_items_conds_tws_1layer_g$y_col3, 
+                      ET_data_by_items_conds_tws_1layer_g$y_col4)
+    
+    # 3. Create the Similarity Matrix
+    sim_matrix_g_L <- cbind(
+      ET_data_by_items_conds_tws_1layer_g$sim_generic_target,
+      ET_data_by_items_conds_tws_1layer_g$sim_generic_compet,
+      ET_data_by_items_conds_tws_1layer_g$sim_generic_dist1,
+      ET_data_by_items_conds_tws_1layer_g$sim_generic_dist2
+    )
+    
+    # create the data list
+    stan_data_g_L <- list(
+      N = nrow(ET_data_by_items_conds_tws_1layer_g),
+      sim = sim_matrix_g_L,
+      timestep = parse_number(ET_data_by_items_conds_tws_1layer_g$tw)+1,
+      y = y_matrix_g_L,
+      num_groups = max(ET_data_by_items_conds_tws_1layer_g$BlockType),
+      group_id = ET_data_by_items_conds_tws_1layer_g$BlockType
+    )
+  
+  # Fit the model
+  fit_g_L <- model$sample(data = stan_data_g_L, chains = 4, parallel_chains = 4, refresh = 0)
+  
+  # Extract the pointwise log-likelihood and compute LOO
+  L_g_log_lik_matrix <- fit_g_L$draws("log_lik", format = "matrix")
+  L_g_loo <- loo(L_g_log_lik_matrix)
+  
+  # Store the result
+  g_loo_results[[L]] <- L_g_loo
+}
+
+saveRDS(g_loo_results,"rdata/g_loo_results.rds")
+```
+
+```{r, warning=F}
+g_loo_results = read_rds("rdata/g_loo_results.rds")
+comparison_g_L <- loo_compare(g_loo_results)
+```
+
+
+```{r}
+comparison_g_df = as_tibble(comparison_g_L) %>% 
+  mutate(layer = parse_number(rownames(comparison_g_L)),
+         is_tied_with_best = abs(elpd_diff) <= 2 * se_diff 
+         )
+
+tied_g_models <- comparison_g_df %>% 
+  filter(is_tied_with_best == TRUE) 
+
+#print(tied_models)
+
+p_layers<-ggplot(comparison_g_df)+
+  geom_line(aes(x = layer, y = elpd_loo), linewidth = 1)+
+  geom_ribbon(data = comparison_g_df, aes(x = layer, ymin = elpd_loo - se_diff, ymax = elpd_loo + se_diff), alpha = 0.5)+
+  geom_point(data = tied_g_models, aes(x = layer, y = elpd_loo, color = elpd_loo == max(elpd_loo)))+
+  # annotate(geom = 'segment', 
+  #          x = min(tied_models$layer), 
+  #          xend = max(tied_models$layer), 
+  #          y = Inf, yend = Inf , color ="red",
+  #          linewidth = 3)+
+  scale_color_manual(values = c("orange", "red"))+
+  labs(x = "HuBERT layer", y = "ELPD LOO")+
+  theme_classic()+
+  theme(legend.position = "none")
+```
+
+(ref:hubert-plot-caption) Acoustic analysis pipeline. **(A)** The HuBERT model was used to extract embeddings across layers for target, competitor, and distractor audio. Pairs of audio stimuli were aligned using dynamic time warping. **(B)** Cosine similarity was calculated per frame for each layer and then averaged within four time windows of interest (t0, t1, t2, t3) in order to be used for fitting to eye-tracking data. **(C)** Performance of the model in predicting eye-tracking data was compared across HuBERT layers. Layer 10 (red point) was found to lead to the best performance and 3 other layers (orange) had comparable performance. An average across comparably performing layers was used in the analysis.
+
+```{r hubert-plot, fig.cap = "(ref:hubert-plot-caption)", fig.width = 8, fig.height = 5, dpi = 300}
+
+pipeline_img_raw <- magick::image_read("image_files/pipelinev2600dpi.png")
+# Automatically trim any native whitespace/transparent borders around the PNG
+pipeline_img_raw <- magick::image_trim(pipeline_img_raw)
+
+# Use magick's built-in ggplot converter to preserve aspect ratio automatically
+p_pipeline_image <- magick::image_ggplot(pipeline_img_raw)
+p_pipeline_image_final <- free(p_pipeline_image, side = "l")
+
+p_similarities<-readRDS("../data/p_sims.rds")
+p_sims = p_similarities$p_sims
+beaker_onsets = p_similarities$beaker_onsets
+
+layout_design <- "
+  AA
+  BC
+"
+
+pipeline_layout <- wrap_plots(
+  A = p_pipeline_image_final, 
+  B = p_sims, 
+  C = p_layers, 
+  design = layout_design
+) + 
+plot_layout(
+  heights = c(1.5, 1),                   
+  widths  = c(1, 1)         
+) +
+  plot_annotation(tag_levels = 'A') &  
+  theme(plot.tag = element_text(size = 16, face = "bold")) # Force uniform tag size
+
+pipeline_layout
+```
+
+```{r getting generic similarities for avg of layers}
+
+
+ET_data_by_items_conds_tws_avglayer_g = ET_data_by_items_conds_tws %>% 
+  filter(layer %in% tied_g_models$layer) %>%  # 9, 10, 32, 33
+  group_by(ItemNum, Condition, BlockType, tw, Pic1, Pic2, Pic3, Pic4, mean_target_prop, mean_compet_prop, mean_dist1_prop, mean_dist2_prop, y_col1, y_col2, y_col3, y_col4) %>% 
+  summarize(sim_avglayer_target = mean(sim_target),
+         sim_avglayer_compet = mean(sim_compet),
+         sim_avglayer_dist1 = mean(sim_dist1),
+         sim_avglayer_dist2 = mean(sim_dist2)) %>% 
+  group_by(Condition, tw) %>% 
+  mutate(sim_generic_target = mean(sim_avglayer_target),
+         sim_generic_compet = mean(sim_avglayer_compet),
+         sim_generic_dist1 = mean(sim_avglayer_dist1),
+         sim_generic_dist2 = mean(sim_avglayer_dist2)) %>% 
+  arrange(BlockType, ItemNum, Condition, tw ) 
+```
+
+```{r}
+
+y_matrix_avg_g <- cbind(ET_data_by_items_conds_tws_avglayer_g$y_col1, 
+                  ET_data_by_items_conds_tws_avglayer_g$y_col2, 
+                  ET_data_by_items_conds_tws_avglayer_g$y_col3, 
+                  ET_data_by_items_conds_tws_avglayer_g$y_col4)
+
+sim_matrix_avg_g <- cbind(
+  ET_data_by_items_conds_tws_avglayer_g$sim_generic_target,
+  ET_data_by_items_conds_tws_avglayer_g$sim_generic_compet,
+  ET_data_by_items_conds_tws_avglayer_g$sim_generic_dist1,
+  ET_data_by_items_conds_tws_avglayer_g$sim_generic_dist2
+)
+
+# create the data list
+stan_data_avg_g <- list(
+  N = nrow(ET_data_by_items_conds_tws_avglayer_g),
+  sim = sim_matrix_avg_g,
+  timestep = parse_number(ET_data_by_items_conds_tws_avglayer_g$tw)+1,
+  y = y_matrix_avg_g,
+  num_groups = max(ET_data_by_items_conds_tws_avglayer_g$BlockType),
+  group_id = ET_data_by_items_conds_tws_avglayer_g$BlockType
+)
+```
+
+```{r fit stan model averaging layers with generic likelihoods, eval = F}
+# Fit the model
+fit_avg_g <- model$sample(data = stan_data_avg_g, chains = 4, parallel_chains = 4, refresh = 0, 
+                      output_dir = "stan_files/model_log_domain_weak_priors_avg_g")
+saveRDS(fit_avg_g,"rdata/avg_generic_stan_model_fit.rds")
+```
+
+```{r, eval = FALSE}
+fit_avg_g$diagnostic_summary() #all good
+bayesplot::mcmc_pairs(fit_avg_g$draws(c("tau[1]","tau[2]","tau[3]","tau[4]","tau[5]","phi")))
+# no excessive tradeoff between phi and any tau/no identifiability issue
+```
+
+```{r}
+fit_avg_g = read_rds("rdata/avg_generic_stan_model_fit.rds")
+```
+
+```{r}
+# Extract the pointwise log-likelihood and compute LOO
+  log_lik_matrix_avg_g <- fit_avg_g$draws("log_lik", format = "matrix")
+  avg_g_loo <- loo(log_lik_matrix_avg_g)
+```
+
+
+```{r elpd comparison}
+elpd_comparison<-loo_compare(avg_loo, g_loo, avg_g_loo)
+#elpd_comparison
+item_080910<-elpd_comparison["model1",]
+gen_080910<-elpd_comparison["model2",]
+gen_09103233<-elpd_comparison["model3",]
+```
+
+```{r, eval = F}
+loo_results[[10]]
+avg_loo
+g_loo
+avg_g_loo
+```
+
+
+
+```{r posterior preds from generic model}
+# Extract the predicted_posterior matrix
+# This returns a dataframe with columns like: predicted_posterior[1,1], predicted_posterior[1,2]...
+pred_summary <- fit_avg_g$summary("predicted_posterior", "mean", quantile, .args = list(probs = c(0.025, .975)))
+
+# Reshape the Stan output into a N x 4 matrix
+pred_df <- pred_summary %>%
+  #mutate(type = str_sub(variable,1,1)) %>% 
+  mutate(
+    # Extract the row (n) and column (i) indices from the variable name
+    row_idx = as.numeric(str_extract(variable, "(?<=\\[)\\d+")),
+    col_idx = as.numeric(str_extract(variable, "\\d+(?=\\])"))
+  ) %>%
+  arrange(col_idx, row_idx) # arrange by the variable name to ensure the rows match 
+
+mean_matrix <- pred_df %>% pull(mean) %>%
+  matrix(nrow = nrow(ET_data_by_items_conds_tws_avglayer_g), ncol = 4)
+q2.5_matrix <- pred_df %>% pull(`2.5%`) %>%
+  matrix(nrow = nrow(ET_data_by_items_conds_tws_avglayer_g), ncol = 4)
+q97.5_matrix <- pred_df %>% pull(`97.5%`) %>%
+  matrix(nrow = nrow(ET_data_by_items_conds_tws_avglayer_g), ncol = 4)
+
+# Bind the predictions back to original dataframe
+ET_data_by_items_conds_tws_avglayer_g_w_posts <- ET_data_by_items_conds_tws_avglayer_g
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_target_m = mean_matrix[, 1]
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_competitor_m = mean_matrix[, 2] # Cohort, Rhyme, or Distractor 1
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_distractor1_m = mean_matrix[, 3]
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_distractor2_m = mean_matrix[, 4]
+  
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_target_lb = q2.5_matrix[, 1]
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_competitor_lb = q2.5_matrix[, 2] # Cohort, Rhyme, or Distractor 1
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_distractor1_lb = q2.5_matrix[, 3]
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_distractor2_lb = q2.5_matrix[, 4]
+
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_target_ub = q97.5_matrix[, 1]
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_competitor_ub = q97.5_matrix[, 2] # Cohort, Rhyme, or Distractor 1
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_distractor1_ub = q97.5_matrix[, 3]
+ET_data_by_items_conds_tws_avglayer_g_w_posts$pred_distractor2_ub = q97.5_matrix[, 4]
+```
+
+
+
+```{r}
+long_data = ET_data_by_items_conds_tws_avglayer_g_w_posts %>% 
+  rowid_to_column("row") %>% 
+  rename(
+    y_1    = y_col1,          pred_1 = pred_target_m,
+    y_2    = y_col2,          pred_2 = pred_competitor_m,
+    y_3    = y_col3,          pred_3 = pred_distractor1_m,
+    y_4    = y_col4,          pred_4 = pred_distractor2_m,
+  ) %>%
+  # pivot using .value to split the prefix from the index number
+  pivot_longer(
+    cols = c(y_1:y_4, pred_1:pred_4),
+    names_to = c(".value", "ROI"),
+    names_pattern = "(y|pred)_(.)"
+  ) %>% 
+  mutate(ROIname = case_when(
+    ROI == 1 ~ "target",
+    ROI == 2 ~ "compet.",
+    ROI == 3 | ROI == 4 ~ "dist."
+  ))
+
+long_data$ROIname = factor(long_data$ROIname, levels = c("target", "compet.", "dist."))
+long_data$Condition = factor(long_data$Condition, levels = c("No competition", "Cohort competition", "Rhyme competition"))
+
+```
+
+
+```{r get draws, eval = FALSE}
+yrep_draws <- fit_avg_g  %>% 
+  spread_draws(y_rep[row, ROI])
+
+post_preds = yrep_draws %>% 
+  left_join(long_data |> mutate(ROI = as.numeric(ROI)), by = c("row", "ROI"))
+
+saveRDS(post_preds, "rdata/posterior_preds_stan_fit_avg_g.rds")
+```
+
+```{r}
+post_preds = read_rds("rdata/posterior_preds_stan_fit_avg_g.rds")
+```
+
+```{r}
+post_preds_summary <- post_preds |>
+  group_by(.draw, ROIname, Condition, tw) |>
+  summarize(
+    pred = mean(y_rep),
+    .groups = "drop"
+  )
+
+post_preds_summary_by_block <- post_preds |>
+  group_by(.draw, ROIname, Condition, BlockType, tw) |>
+  summarize(
+    pred = mean(y_rep),
+    .groups = "drop"
+  )
+
+```
+
+
+```{r}
+
+p_cohort_tw<-ggplot(long_data %>% filter(Condition != "Rhyme competition" & ROIname != "dist."))+
+  stat_summary(aes(x=tw, y=y, color=Condition, shape = ROIname), geom='pointrange',fun.data="mean_cl_boot")+
+  stat_summary(aes(x=parse_number(tw)+1, y=y, color=Condition, linetype = ROIname), geom='line', fun="mean", linewidth=1)+
+  scale_color_manual(values = c("darkgrey", '#e41a1c'))+
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c("Target", "Competitor"), name = "ROI")+
+  labs(y="Fixation proportions", x="Time window")+
+  theme_classic()+
+  theme(legend.position = "none")
+
+
+
+p_rhyme_tw<-ggplot(long_data %>% filter(Condition != "Cohort competition" & ROIname != "dist."))+
+  stat_summary(aes(x=tw, y=y, color=Condition, shape = ROIname), geom='pointrange',fun.data="mean_cl_boot")+
+  stat_summary(aes(x=parse_number(tw)+1, y=y, color=Condition, linetype = ROIname), geom='line', fun="mean", linewidth = 1)+
+  scale_color_manual(values = c("darkgrey", 'cornflowerblue'))+
+  #scale_fill_manual(values = c("darkgrey", 'cornflowerblue'))+
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c("Target", "Competitor"), name = "ROI")+
+  labs(y="Fixation proportions", x="Time window")+
+  theme_classic()+
+  theme(legend.position = "none")
+
+
+p_cohort_tw_preds<-ggplot(post_preds_summary %>% 
+                            filter(Condition != "Rhyme competition" & ROIname != "dist." & .draw <51))+
+  geom_line(aes(x = tw, y = pred, color = Condition, linetype = ROIname, group = paste0(.draw, Condition, ROIname)), alpha =0.2)+
+  scale_color_manual(values = c("darkgrey", '#e41a1c'))+
+  #scale_fill_manual(values = c("darkgrey", '#e41a1c'))+
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c("Target", "Competitor"), name = "ROI")+
+  labs(y="Posterior predictions", x="Time window")+
+  theme_classic()+
+  theme(legend.position = "none")
+
+p_rhyme_tw_preds<-ggplot(post_preds_summary %>% filter(Condition != "Cohort competition" & ROIname != "dist." & .draw <51))+
+  geom_line(aes(x = tw, y = pred, color = Condition, linetype = ROIname, group = paste0(.draw, Condition, ROIname)), alpha =0.2)+
+  scale_color_manual(values = c("darkgrey", 'cornflowerblue'))+
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c("Target", "Competitor"), name = "ROI")+
+  labs(y="Posterior predictions", x="Time window")+
+  theme_classic()+
+  theme(legend.position = "none")
+
+```
+
+
+```{r}
+
+post_preds_summ = post_preds %>% 
+  group_by(tw, Condition, ROIname ) %>% 
+  summarize(mean_pred = mean(y_rep),
+            mean_fix = mean(y)) %>% 
+  mutate(Condition = factor(Condition, 
+                            levels = c("No competition", "Cohort competition", "Rhyme competition"), 
+                            labels = c("No competition", "Early competition", "Late competition")))
+
+p_model_preds_summ<-ggplot(post_preds_summ,
+       aes(x = mean_pred, y = mean_fix, fill = Condition, color = Condition))+
+  geom_abline(aes(slope = 1, intercept = 0), linewidth = 1, color = "black")+
+  geom_point(shape = 16, size = 4, stroke = 2)+
+  geom_text_repel(aes(label = paste0(ROIname,"_", tw)), color = "black")+
+  scale_color_manual(values = c("darkgrey", "#e41a1c", "cornflowerblue"))+
+  scale_fill_manual(values = c("darkgrey", "#e41a1c", "cornflowerblue"))+
+  labs(x = "Posterior predictions", y = "Fixation proportions")+
+  theme_classic()
+```
+
+(ref:model-posteriors-plot-caption) Eye-tracking data across four timewindows of interest and model posterior summary. **(A)** Timecourse of proportion of eye fixations to targets and competitors downsampled to four time windows in the No competition and Early competition conditions. **(B)** Timecourse of proportion of eye fixations to targets and competitors downsampled to four time windows in the No competition and Late competition conditions. **(C)** Posterior model predictions (50 posterior draws) over four time windows by ROI (target and competitor/distractor) in the No competition and Early competition conditions. **(D)** Posterior model predictions (50 posterior draws) over four time windows by ROI (target and competitor/distractor) in the No competition and Late competition conditions. **(E)** Correlation between posterior model predictions and average eye fixation proportions: points represent means per competition condition, time window, and ROI (labels indicate the ROI and time window). Black line indicates identity line. In A-D, solid lines indicate target fixations. Dashed lines indicate competitor or distractor fixations.
+
+```{r model-posteriors-plots, fig.cap = "(ref:model-posteriors-plot-caption)", fig.width = 10, fig.height = 5, dpi = 300, warning=FALSE}
+
+layout_design <- "ABE\nCDE"
+
+post_preds_layout <- wrap_plots(
+  A = p_cohort_tw, 
+  B = p_rhyme_tw, 
+  C = p_cohort_tw_preds, 
+  D = p_rhyme_tw_preds, 
+  E = p_model_preds_summ,
+  design = layout_design
+) +
+plot_layout(
+  widths  = c(1, 1, 2)         
+)+ plot_annotation(tag_levels = 'A') &  
+  theme(plot.tag = element_text(size = 16, face = "bold")) 
+
+post_preds_layout
+```
+
+```{r extracting condition means and contrasts of interest}
+  
+post_preds_diffs_by_tw_only = post_preds %>% 
+  ungroup() %>% 
+  select(ItemNum, .chain, .iteration, .draw, BlockType, ROI, ROIname, tw, Condition, y_rep) %>% 
+  pivot_wider( names_from = c(ROIname, ROI, tw), values_from = y_rep) %>% 
+  mutate(t0_TA = target_1_t0 - compet._2_t0,
+         t1_TA = target_1_t1 - compet._2_t1,
+         t2_TA = target_1_t2 - compet._2_t2,
+         t3_TA = target_1_t3 - compet._2_t3)
+         
+
+post_preds_diffs_all = post_preds %>% 
+  ungroup() %>% 
+  select(ItemNum, .chain, .iteration, .draw, BlockType, ROI, ROIname, tw, Condition, y_rep) %>% 
+  pivot_wider( names_from = c(ROIname, ROI, tw, Condition), values_from = y_rep) %>% 
+  mutate(t0_TA_no_comp = `target_1_t0_No competition` - `compet._2_t0_No competition`,
+         t0_TA_coh_comp = `target_1_t0_Cohort competition` - `compet._2_t0_Cohort competition`,
+         t0_TA_rhy_comp = `target_1_t0_Rhyme competition` - `compet._2_t0_Rhyme competition`,
+         
+         t1_TA_no_comp = `target_1_t1_No competition` - `compet._2_t1_No competition`,
+         t1_TA_coh_comp = `target_1_t1_Cohort competition` - `compet._2_t1_Cohort competition`,
+         t1_TA_rhy_comp = `target_1_t1_Rhyme competition` - `compet._2_t1_Rhyme competition`,
+         
+         t2_TA_no_comp = `target_1_t2_No competition` - `compet._2_t2_No competition`,
+         t2_TA_coh_comp = `target_1_t2_Cohort competition` - `compet._2_t2_Cohort competition`,
+         t2_TA_rhy_comp = `target_1_t2_Rhyme competition` - `compet._2_t2_Rhyme competition`,
+         
+         t3_TA_no_comp = `target_1_t3_No competition` - `compet._2_t3_No competition`,
+         t3_TA_coh_comp = `target_1_t3_Cohort competition` - `compet._2_t3_Cohort competition`,
+         t3_TA_rhy_comp = `target_1_t3_Rhyme competition` - `compet._2_t3_Rhyme competition`,
+         
+         t0_target_coh_minus_no_comp = `target_1_t0_Cohort competition` - `target_1_t0_No competition`,
+         t0_target_rhy_minus_no_comp = `target_1_t0_Rhyme competition` - `target_1_t0_No competition`,
+         
+         t1_target_coh_minus_no_comp = `target_1_t1_Cohort competition` - `target_1_t1_No competition`,
+         t1_target_rhy_minus_no_comp = `target_1_t1_Rhyme competition` - `target_1_t1_No competition`,
+         
+         t2_target_coh_minus_no_comp = `target_1_t2_Cohort competition` - `target_1_t2_No competition`,
+         t2_target_rhy_minus_no_comp = `target_1_t2_Rhyme competition` - `target_1_t2_No competition`,
+         
+         t3_target_coh_minus_no_comp = `target_1_t3_Cohort competition` - `target_1_t3_No competition`,
+         t3_target_rhy_minus_no_comp = `target_1_t3_Rhyme competition` - `target_1_t3_No competition`,
+         
+         t0_compet_coh_minus_no_comp = `compet._2_t0_Cohort competition` - `compet._2_t0_No competition`,
+         t0_compet_rhy_minus_no_comp = `compet._2_t0_Rhyme competition` - `compet._2_t0_No competition`,
+         
+         t1_compet_coh_minus_no_comp = `compet._2_t1_Cohort competition` - `compet._2_t1_No competition`,
+         t1_compet_rhy_minus_no_comp = `compet._2_t1_Rhyme competition` - `compet._2_t1_No competition`,
+         
+         t2_compet_coh_minus_no_comp = `compet._2_t2_Cohort competition` - `compet._2_t2_No competition`,
+         t2_compet_rhy_minus_no_comp = `compet._2_t2_Rhyme competition` - `compet._2_t2_No competition`,
+         
+         t3_compet_coh_minus_no_comp = `compet._2_t3_Cohort competition` - `compet._2_t3_No competition`,
+         t3_compet_rhy_minus_no_comp = `compet._2_t3_Rhyme competition` - `compet._2_t3_No competition`,
+         
+         t0_TA_coh_minus_no_comp = t0_TA_coh_comp - t0_TA_no_comp,
+         t0_TA_rhy_minus_no_comp = t0_TA_rhy_comp - t0_TA_no_comp,
+         
+         t1_TA_coh_minus_no_comp = t1_TA_coh_comp - t1_TA_no_comp,
+         t1_TA_rhy_minus_no_comp = t1_TA_rhy_comp - t1_TA_no_comp,
+         
+         t2_TA_coh_minus_no_comp = t2_TA_coh_comp - t2_TA_no_comp,
+         t2_TA_rhy_minus_no_comp = t2_TA_rhy_comp - t2_TA_no_comp,
+         
+         t3_TA_coh_minus_no_comp = t3_TA_coh_comp - t3_TA_no_comp,
+         t3_TA_rhy_minus_no_comp = t3_TA_rhy_comp - t3_TA_no_comp)
+  
+
+```
+
+
+
+
+```{r plotting noisy vs. intact, eval = F}
+p_noisy_v_intact_tw<-ggplot(long_data %>% 
+                              mutate(BlockCond = if_else(BlockType %in% c(1,4,5), "Intact", "Noisy"),
+                                     Condition = factor(Condition, 
+                                                        levels = c("No competition", "Cohort competition", "Rhyme competition"), 
+                                                        labels = c("No competition", "Early competition", "Late competition"))) %>% 
+                              filter( (BlockType==1 | BlockType ==2) &  (ROI==1 | ROI == 2) ) 
+                        ) +
+  stat_summary(aes(x=tw, y=y, color = Condition, alpha=as.factor(BlockCond), shape = ROIname), 
+               geom='pointrange'#, position = position_dodge(width = 0.7)
+               )+
+  stat_summary(aes(x=parse_number(tw)+1, y=y, linetype=ROIname, color = Condition,
+                   group = interaction(as.factor(BlockCond),ROIname), alpha = as.factor(BlockCond)), geom='line', fun="mean",
+               linewidth=1 #,position = position_dodge(width = 0.7)
+               )+
+  facet_wrap(~Condition)+
+  scale_color_manual(name = '', values = c("darkgray", "#e41a1c", "cornflowerblue"), guide = "none")+
+  scale_alpha_manual(name = '', values = c(1,0.5), labels = c("Intact [1st block]","Noisy [1st block]"))+
+  scale_shape_manual(name = "", values = c("circle", "triangle"), labels = c("Target", "Competitor"))+
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c("Target", "Competitor"), name = "ROI", guide = "none")+
+  labs(y="Fixation proportions", x="Time window")+
+  theme_classic(base_size = 14) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    strip.background = element_blank()
+  )
+
+#p_noisy_v_intact_tw
+```
+
+```{r plotting noisy v intact preds}
+
+d_for_plot = post_preds_summary_by_block %>% filter( .draw <51, (ROIname=="target" | ROIname == "compet.")) %>% 
+                              mutate(BlockCond = if_else(BlockType %in% c(1,4,5), "Intact", "Noisy"),
+                                     Condition = factor(Condition, 
+                                                        levels = c("No competition", "Cohort competition", "Rhyme competition"), 
+                                                        labels = c("No competition", "Early competition", "Late competition"))) %>% 
+  group_by(.draw, ROIname, Condition, tw, BlockCond) %>% 
+  summarize(mean_pred = mean(pred))
+                        
+
+p_noisy_v_intact_tw_preds<-ggplot(d_for_plot) +
+  geom_line(aes(x=tw, y=mean_pred, color = BlockCond, linetype = as.factor(ROIname),
+                   group = interaction(.draw, BlockCond, as.factor(ROIname))),
+               alpha = 0.2
+               )+
+  facet_wrap(~Condition)+
+  scale_color_manual(name = 'Block Condition', values = c("purple", "orange"))+
+  scale_linetype_manual(values = c("solid", "dashed"), labels = c("Target", "Competitor"), name = "ROI")+
+  labs(y="Fixation proportions", x="Time window")+
+  theme_classic(base_size = 14) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    strip.background = element_blank()
+  )+
+  guides(linetype = guide_legend(override.aes = list(alpha = 1)),
+         color = guide_legend(override.aes = list(alpha = 1)))
+
+#p_noisy_v_intact_tw_preds
+```
+
+
+
+```{r plotting tau}
+
+tau_draws <- fit_g %>%
+  spread_draws(tau[group_id])
+
+tau_draws <- tau_draws %>%
+  mutate(
+    block_name = case_when(
+      group_id == 1 ~ "Intact [1st block]",
+      group_id == 2 ~ "Noisy [1st block]",
+      group_id == 3 ~ "Noisy after Intact [2nd block]",
+      group_id == 4 ~ "Intact after Noisy, no explanation [2nd block]",
+      group_id == 5 ~ "Intact after Noisy, w/ explanation [2nd block]"
+    ),
+    block_name = factor(block_name, levels = rev(c(
+      "Intact [1st block]",
+      "Noisy [1st block]",
+      "Noisy after Intact [2nd block]",
+      "Intact after Noisy, no explanation [2nd block]",
+      "Intact after Noisy, w/ explanation [2nd block]"
+    )))
+  )
+
+
+tau_plot<-ggplot(tau_draws, aes(x = tau, y = block_name, fill = block_name)) +
+  stat_halfeye(
+    alpha = 0.7,
+    .width = c(0.68, 0.95), 
+    point_interval = median_qi 
+  ) +
+  scale_fill_viridis_d(option = "mako", guide = "none") +
+  labs(
+    x = expression("Estimated Noise (" * tau * ")"),
+    y = NULL
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    axis.text.y = element_text(face = "bold", size = 12)
+  )
+
+```
+```{r plotting tau contrasts}
+# real initial_noise_effect = tau[2] - tau[1];
+#   real noise_residual_effect = tau[4] - tau[1];
+#   real noise_contrast_effect = tau[3] - tau[2];
+#   real explain_away_effect = tau[5] - tau[4]; 
+#   real explained_noise_residual_effect = tau[5] - tau[1]; 
+
+contrast_draws <- fit_g %>%
+  spread_draws(initial_noise_effect, noise_residual_effect, noise_contrast_effect, explain_away_effect, explained_noise_residual_effect) %>%
+  tidyr::pivot_longer(
+    cols = c(initial_noise_effect, noise_residual_effect, noise_contrast_effect, explain_away_effect, explained_noise_residual_effect),
+    names_to = "contrast_name",
+    values_to = "difference"
+  ) %>%
+  mutate(
+    contrast_label = case_when(
+      contrast_name == "initial_noise_effect" ~ "Noise effect:\nNoisy [1st block] - Intact [1st block]",
+      contrast_name == "noise_residual_effect" ~ "Adaptation effect:\nIntact, no explanation [2nd block] - Intact [1st block]",
+      contrast_name == "noise_contrast_effect" ~ "Adaptation effect:\nNoisy [2nd block] - Noisy [1st block]",
+      contrast_name == "explain_away_effect" ~ "Explaining away effect:\nIntact w/ explanation [2nd block] - Intact, no explanation [2nd block]",
+      contrast_name == "explained_noise_residual_effect" ~ "Intact, w/ explanation [2nd block] - Intact [1st block]"
+    ),
+    contrast_label = factor(contrast_label, levels = rev(c(
+      "Noise effect:\nNoisy [1st block] - Intact [1st block]",
+      "Adaptation effect:\nIntact, no explanation [2nd block] - Intact [1st block]",
+      "Adaptation effect:\nNoisy [2nd block] - Noisy [1st block]",
+      "Explaining away effect:\nIntact w/ explanation [2nd block] - Intact, no explanation [2nd block]",
+      "Intact, w/ explanation [2nd block] - Intact [1st block]"
+    )))
+  )
+
+
+contrast_plot<-ggplot(contrast_draws %>% filter(contrast_label != "Intact, w/ explanation [2nd block] - Intact [1st block]"), 
+       aes(x = difference, y = contrast_label)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "firebrick", linewidth = 1) +
+  stat_halfeye(
+    alpha = 0.8,
+    fill = "steelblue",
+    .width = c(0.68, 0.95),
+    point_interval = median_qi
+  ) +
+  labs(
+    x = expression("Difference in " * tau * ""),
+    y = NULL
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    axis.text.y = element_text(face = "bold", size = 11)
+  )
+```
+
+(ref:tau-effects-plot-caption) The effect of the manipulation of noise in the environment. **(A)** Posterior predictions (50 draws) of the timecourse of proportion of eye fixations to targets and competitors across competition conditions by block condition (*Intact* blocks vs. *Noisy* blocks). **(B)** Posterior of the listener's noise estimate, $\tau$, per block condition. **(C)** Posterior estimates of differences between $\tau$ values across blocks. 
+
+```{r tau-effects-plots, fig.cap = "(ref:tau-effects-plot-caption)", fig.width = 8, fig.height = 8, dpi = 300}
+
+free(p_noisy_v_intact_tw_preds) / tau_plot / contrast_plot + 
+  plot_layout(heights = c(1.5, 1, 1)) + plot_annotation(tag_levels = "A")&
+  theme(plot.tag = element_text(size = 16, face = "bold")) 
+```
+
+## Model selection and layer-wise analysis
+
+To fit the Bayesian model to the eye-tracking data and estimate $\tau$ values across different block conditions, the eye-tracking data were first downsampled to four time windows of interest and then averaged across participants for each item and condition (Figure\ \@ref(fig:model-posteriors-plots)A-B). Proportions of fixations to all four regions of interest (ROIs) were simultaneously modeled with a Dirichlet distribution. Given that the similarity timeseries differed across layers (Figure\ \@ref(fig:hubert-plot)B), we evaluated several versions of the noise likelihood to determine the granularity of information that best predicted eye-gaze. Model performance was compared using leave-one-out cross-validation to estimate expected log-pointwise predictive density (ELPD-LOO). A difference in ELPD was considered significant if it exceeded two times the standard error of the ELPD difference between models [@sivula2025Uncertainty]. 
+Models built on *stimulus-specific* similarities were compared against those using *generic* similarities (i.e., averaging target-candidate similarity for a given condition across all stimulus pairs).
+First, a series of models were fitted with stimulus-specific similarities from each HuBERT layer. Layers 8, 9 and 10 yielded the best performance, with layer 10 having the nominally highest ELPD. 
+Then, a model using stimulus-specific similarities averaged across layers 8, 9, and 10 was fitted. 
+Next, the layer-wise evaluation was repeated using generic similarities. Layers 9, 10, 32, and 33 lead to the best performance, with layer 10 having the nominally highest ELPD again (Figure\ \@ref(fig:hubert-plot)C). Thus, a combined model using generic similarities averaged across layers 9, 10, 32, and 33 was fitted.
+A hybrid model using generic similarities averaged across layers 8, 9, and 10 was also fit for direct comparison with the stimulus-specific model.
+The three models using similarities averaged across layers were compared. Performance was lower for the model using stimulus-specific similarities averaging across layers 8, 9, 10 ($\text{ELPD-LOO} =$ `r item_080910["elpd_loo"]`, $SE_{\text{ELPD-LOO}} =$ `r item_080910["se_elpd_loo"]`) compared to the model with generic similarities averaging across layers 8, 9, and 10 ($\text{ELPD-LOO} =$ `r gen_080910["elpd_loo"]`, $SE_{\text{ELPD-LOO}} =$ `r gen_080910["se_elpd_loo"]`, $\Delta =$ `r item_080910["elpd_diff"]`, $SE_{\Delta} =$ `r item_080910["se_diff"]`) and the model with generic similarities averaging across layers 9, 10, 32, and 33 ($\text{ELPD-LOO} =$ `r gen_09103233["elpd_loo"]`, $SE_{\text{ELPD-LOO}} =$ `r gen_09103233["se_elpd_loo"]`). The latter model using generic similarities averaged over layers 9, 10, 32, and 33 was adopted for further analyses.
+
+```{r summarizing post means and diffs by tw only}
+post_preds_diffs_by_tw_only_summary = post_preds_diffs_by_tw_only %>% 
+  summarize(across(
+      .cols = -c(ItemNum, .chain, .iteration, .draw, BlockType, Condition), 
+      .fns = list(
+        m = ~ mean(.x, na.rm = TRUE),
+        q2.5 = ~ quantile(.x, 0.025, na.rm = TRUE),
+        q97.5 = ~ quantile(.x, 0.975, na.rm = TRUE),
+        q5 = ~ quantile(.x, 0.05, na.rm = TRUE),
+        q95 = ~ quantile(.x, 0.95, na.rm = TRUE),
+        abovezero = ~ mean(.x>0, na.rm=TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+post_preds_diffs_by_tw_only_summary_long = post_preds_diffs_by_tw_only_summary %>%
+  pivot_longer(
+    cols = everything(), 
+    names_to = c("variable", ".value"),
+    names_pattern = "(.*)_(.*)$"
+  ) %>% 
+  mutate(
+    across(where(is.numeric), ~ round(.x, digits = 2))
+    )
+#post_preds_diffs_summary_long
+```
+
+```{r summarizing post means and diffs}
+post_preds_diffs_summary = post_preds_diffs_all %>% 
+  summarize(across(
+      .cols = -c(ItemNum, .chain, .iteration, .draw, BlockType), 
+      .fns = list(
+        m = ~ mean(.x, na.rm = TRUE),
+        q2.5 = ~ quantile(.x, 0.025, na.rm = TRUE),
+        q97.5 = ~ quantile(.x, 0.975, na.rm = TRUE),
+        q5 = ~ quantile(.x, 0.05, na.rm = TRUE),
+        q95 = ~ quantile(.x, 0.95, na.rm = TRUE),
+        abovezero = ~ mean(.x>0, na.rm=TRUE)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  )
+post_preds_diffs_summary_long = post_preds_diffs_summary %>%
+  pivot_longer(
+    cols = everything(), 
+    names_to = c("variable", ".value"),
+    names_pattern = "(.*)_(.*)$"
+  ) %>% 
+  mutate(
+    across(where(is.numeric), ~ round(.x, digits = 2))
+    )
+#post_preds_diffs_summary_long
+```
+
+```{r summarizing post means and diffs for intact v noisy, eval = FALSE}
+post_preds_diffs_noise = post_preds_diffs_all %>% 
+  mutate(BlockCond = if_else(BlockType %in% c(1,4,5), "Intact", "Noisy")) %>% 
+  #filter(BlockType == 1 | BlockType == 2) %>% 
+  select(-BlockType) %>% 
+  group_by(ItemNum, .chain, .iteration, .draw, BlockCond) %>% 
+  #  Use the bare function 'mean' (no ~ or .x) to trigger C++ optimization
+  summarize(across(everything(), mean), .groups = "drop")
+
+post_preds_diffs_noise_wide = post_preds_diffs_noise %>% 
+  pivot_wider(id_cols = c(ItemNum, .chain, .iteration, .draw), 
+              names_from = BlockCond,
+              values_from = -c(ItemNum, .chain, .iteration, .draw, BlockCond)) 
+
+# 1. Identify all columns that end exactly with "_1"
+cols_intact <- grep("_Intact$", names(post_preds_diffs_noise_wide), value = TRUE)
+
+# 2. Generate the exact names of the corresponding "_2" columns
+cols_noisy<- sub("_Intact$", "_Noisy", cols_intact)
+
+# 3. Generate the names for your new "_diff" columns
+cols_diff <- sub("_Intact$", "_diff", cols_intact)
+
+# 4. Subtract the _2 dataframe subset from the _1 dataframe subset 
+# and assign them to the new _diff columns
+post_preds_diffs_noise_wide[cols_diff] <- post_preds_diffs_noise_wide[cols_intact] - post_preds_diffs_noise_wide[cols_noisy]
+
+post_preds_diffs_noise_summary = post_preds_diffs_noise_wide %>% 
+  summarize(across(
+      .cols = -c(ItemNum, .chain, .iteration, .draw), 
+      .fns = list(
+        m = ~ mean(.x, na.rm = TRUE),
+        q2.5 = ~ quantile(.x, 0.025, na.rm = TRUE),
+        q97.5 = ~ quantile(.x, 0.975, na.rm = TRUE),
+        q5 = ~ quantile(.x, 0.05, na.rm = TRUE),
+        q95 = ~ quantile(.x, 0.95, na.rm = TRUE),
+        abovezero = ~ mean(.x>0, na.rm=TRUE)
+      ),
+      .names = "{.col}__{.fn}"
+    )
+  )
+
+post_preds_diffs_noise_summary_long = post_preds_diffs_noise_summary %>%
+  pivot_longer(
+    cols = everything(), 
+    names_to = c("variable", ".value"),
+    names_pattern = "(.*)__(.*)$"
+  ) %>% 
+  mutate(
+    across(where(is.numeric), ~ round(.x, digits = 2))
+    )
+#post_preds_diffs_noise_summary_long %>% glimpse()
+```
+
+
+
+## Bayesian noisy-channel belief updating model captures the timecourse of eye-gaze during speech perception 
+
+The posterior distribution of this best-fitting model is summarized in Figure\ \@ref(fig:model-posteriors-plots)C-D. The posterior estimates capture the critical patterns observed in the eye-tracking data (Figure\ \@ref(fig:model-posteriors-plots)E). To summarize the results, I report means ($M$) of the posterior samples as point estimates of conditions or differences ($\Delta$) between conditions along with 90% posterior intervals ($90\%~\text{CrI}$) of those estimates and the posterior probability that the difference estimate is positive ($p_+$) or negative ($p_-$).
+
+```{r pulling values for text}
+# target across time windows (ignores condition)
+t0_target_m = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t0") %>% pull(m)
+t0_target_q5 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t0") %>% pull(q5)
+t0_target_q95 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t0") %>% pull(q95)
+t0_target_abovezero = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t0") %>% pull(abovezero)
+
+t1_target_m = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t1") %>% pull(m)
+t1_target_q5 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t1") %>% pull(q5)
+t1_target_q95 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t1") %>% pull(q95)
+t1_target_abovezero = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t1") %>% pull(abovezero)
+
+t2_target_m = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t2") %>% pull(m)
+t2_target_q5 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t2") %>% pull(q5)
+t2_target_q95 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t2") %>% pull(q95)
+t2_target_abovezero = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t2") %>% pull(abovezero)
+
+t3_target_m = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t3") %>% pull(m)
+t3_target_q5 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t3") %>% pull(q5)
+t3_target_q95 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t3") %>% pull(q95)
+t3_target_abovezero = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "target_1_t3") %>% pull(abovezero)
+
+# Cohort competitors across time windows
+
+t0_comp_coh_m = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t0_Cohort competition") %>% pull(m)
+t0_comp_coh_q5 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t0_Cohort competition") %>% pull(q5)
+t0_comp_coh_q95 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t0_Cohort competition") %>% pull(q95)
+t0_comp_coh_abovezero = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t0_Cohort competition") %>% pull(abovezero)
+
+t1_comp_coh_m = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t1_Cohort competition") %>% pull(m)
+t1_comp_coh_q5 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t1_Cohort competition") %>% pull(q5)
+t1_comp_coh_q95 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t1_Cohort competition") %>% pull(q95)
+t1_comp_coh_abovezero = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t1_Cohort competition") %>% pull(abovezero)
+
+t2_comp_coh_m = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t2_Cohort competition") %>% pull(m)
+t2_comp_coh_q5 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t2_Cohort competition") %>% pull(q5)
+t2_comp_coh_q95 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t2_Cohort competition") %>% pull(q95)
+t2_comp_coh_abovezero = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t2_Cohort competition") %>% pull(abovezero)
+
+t3_comp_coh_m = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t3_Cohort competition") %>% pull(m)
+t3_comp_coh_q5 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t3_Cohort competition") %>% pull(q5)
+t3_comp_coh_q95 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t3_Cohort competition") %>% pull(q95)
+t3_comp_coh_abovezero = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t3_Cohort competition") %>% pull(abovezero)
+
+# Rhyme competitors across time windows
+
+t0_comp_rhy_m = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t0_Rhyme competition") %>% pull(m)
+t0_comp_rhy_q5 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t0_Rhyme competition") %>% pull(q5)
+t0_comp_rhy_q95 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t0_Rhyme competition") %>% pull(q95)
+t0_comp_rhy_abovezero = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t0_Rhyme competition") %>% pull(abovezero)
+
+t1_comp_rhy_m = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t1_Rhyme competition") %>% pull(m)
+t1_comp_rhy_q5 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t1_Rhyme competition") %>% pull(q5)
+t1_comp_rhy_q95 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t1_Rhyme competition") %>% pull(q95)
+t1_comp_rhy_abovezero = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t1_Rhyme competition") %>% pull(abovezero)
+
+t2_comp_rhy_m = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t2_Rhyme competition") %>% pull(m)
+t2_comp_rhy_q5 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t2_Rhyme competition") %>% pull(q5)
+t2_comp_rhy_q95 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t2_Rhyme competition") %>% pull(q95)
+t2_comp_rhy_abovezero = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t2_Rhyme competition") %>% pull(abovezero)
+
+t3_comp_rhy_m = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t3_Rhyme competition") %>% pull(m)
+t3_comp_rhy_q5 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t3_Rhyme competition") %>% pull(q5)
+t3_comp_rhy_q95 = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t3_Rhyme competition") %>% pull(q95)
+t3_comp_rhy_abovezero = post_preds_diffs_summary_long %>% filter(variable == "compet._2_t3_Rhyme competition") %>% pull(abovezero)
+
+# Target advantage
+
+t0_TA_m = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t0_TA") %>% pull(m)
+t0_TA_q5 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t0_TA") %>% pull(q5)
+t0_TA_q95 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t0_TA") %>% pull(q95)
+t0_TA_abovezero = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t0_TA") %>% pull(abovezero)
+
+t1_TA_m = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t1_TA") %>% pull(m)
+t1_TA_q5 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t1_TA") %>% pull(q5)
+t1_TA_q95 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t1_TA") %>% pull(q95)
+t1_TA_abovezero = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t1_TA") %>% pull(abovezero)
+
+t2_TA_m = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t2_TA") %>% pull(m)
+t2_TA_q5 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t2_TA") %>% pull(q5)
+t2_TA_q95 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t2_TA") %>% pull(q95)
+t2_TA_abovezero = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t2_TA") %>% pull(abovezero)
+
+t3_TA_m = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t3_TA") %>% pull(m)
+t3_TA_q5 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t3_TA") %>% pull(q5)
+t3_TA_q95 = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t3_TA") %>% pull(q95)
+t3_TA_abovezero = post_preds_diffs_by_tw_only_summary_long %>% filter(variable == "t3_TA") %>% pull(abovezero)
+
+t0_TA_coh_minus_no_comp_m = post_preds_diffs_summary_long %>% filter(variable == "t0_TA_coh_minus_no_comp") %>% pull(m)
+t0_TA_coh_minus_no_comp_q5 = post_preds_diffs_summary_long %>% filter(variable == "t0_TA_coh_minus_no_comp") %>% pull(q5)
+t0_TA_coh_minus_no_comp_q95 = post_preds_diffs_summary_long %>% filter(variable == "t0_TA_coh_minus_no_comp") %>% pull(q95)
+t0_TA_coh_minus_no_comp_abovezero = post_preds_diffs_summary_long %>% filter(variable == "t0_TA_coh_minus_no_comp") %>% pull(abovezero)
+
+t0_TA_rhy_minus_no_comp_m = post_preds_diffs_summary_long %>% filter(variable == "t0_TA_rhy_minus_no_comp") %>% pull(m)
+t0_TA_rhy_minus_no_comp_q5 = post_preds_diffs_summary_long %>% filter(variable == "t0_TA_rhy_minus_no_comp") %>% pull(q5)
+t0_TA_rhy_minus_no_comp_q95 = post_preds_diffs_summary_long %>% filter(variable == "t0_TA_rhy_minus_no_comp") %>% pull(q95)
+t0_TA_rhy_minus_no_comp_abovezero = post_preds_diffs_summary_long %>% filter(variable == "t0_TA_rhy_minus_no_comp") %>% pull(abovezero)
+
+t1_TA_coh_minus_no_comp_m = post_preds_diffs_summary_long %>% filter(variable == "t1_TA_coh_minus_no_comp") %>% pull(m)
+t1_TA_coh_minus_no_comp_q5 = post_preds_diffs_summary_long %>% filter(variable == "t1_TA_coh_minus_no_comp") %>% pull(q5)
+t1_TA_coh_minus_no_comp_q95 = post_preds_diffs_summary_long %>% filter(variable == "t1_TA_coh_minus_no_comp") %>% pull(q95)
+t1_TA_coh_minus_no_comp_abovezero = post_preds_diffs_summary_long %>% filter(variable == "t1_TA_coh_minus_no_comp") %>% pull(abovezero)
+
+t1_TA_rhy_minus_no_comp_m = post_preds_diffs_summary_long %>% filter(variable == "t1_TA_rhy_minus_no_comp") %>% pull(m)
+t1_TA_rhy_minus_no_comp_q5 = post_preds_diffs_summary_long %>% filter(variable == "t1_TA_rhy_minus_no_comp") %>% pull(q5)
+t1_TA_rhy_minus_no_comp_q95 = post_preds_diffs_summary_long %>% filter(variable == "t1_TA_rhy_minus_no_comp") %>% pull(q95)
+t1_TA_rhy_minus_no_comp_abovezero = post_preds_diffs_summary_long %>% filter(variable == "t1_TA_rhy_minus_no_comp") %>% pull(abovezero)
+
+t2_TA_coh_minus_no_comp_m = post_preds_diffs_summary_long %>% filter(variable == "t2_TA_coh_minus_no_comp") %>% pull(m)
+t2_TA_coh_minus_no_comp_q5 = post_preds_diffs_summary_long %>% filter(variable == "t2_TA_coh_minus_no_comp") %>% pull(q5)
+t2_TA_coh_minus_no_comp_q95 = post_preds_diffs_summary_long %>% filter(variable == "t2_TA_coh_minus_no_comp") %>% pull(q95)
+t2_TA_coh_minus_no_comp_abovezero = post_preds_diffs_summary_long %>% filter(variable == "t2_TA_coh_minus_no_comp") %>% pull(abovezero)
+
+t2_TA_rhy_minus_no_comp_m = post_preds_diffs_summary_long %>% filter(variable == "t2_TA_rhy_minus_no_comp") %>% pull(m)
+t2_TA_rhy_minus_no_comp_q5 = post_preds_diffs_summary_long %>% filter(variable == "t2_TA_rhy_minus_no_comp") %>% pull(q5)
+t2_TA_rhy_minus_no_comp_q95 = post_preds_diffs_summary_long %>% filter(variable == "t2_TA_rhy_minus_no_comp") %>% pull(q95)
+t2_TA_rhy_minus_no_comp_abovezero = post_preds_diffs_summary_long %>% filter(variable == "t2_TA_rhy_minus_no_comp") %>% pull(abovezero)
+
+t3_TA_coh_minus_no_comp_m = post_preds_diffs_summary_long %>% filter(variable == "t3_TA_coh_minus_no_comp") %>% pull(m)
+t3_TA_coh_minus_no_comp_q5 = post_preds_diffs_summary_long %>% filter(variable == "t3_TA_coh_minus_no_comp") %>% pull(q5)
+t3_TA_coh_minus_no_comp_q95 = post_preds_diffs_summary_long %>% filter(variable == "t3_TA_coh_minus_no_comp") %>% pull(q95)
+t3_TA_coh_minus_no_comp_abovezero = post_preds_diffs_summary_long %>% filter(variable == "t3_TA_coh_minus_no_comp") %>% pull(abovezero)
+
+t3_TA_rhy_minus_no_comp_m = post_preds_diffs_summary_long %>% filter(variable == "t3_TA_rhy_minus_no_comp") %>% pull(m)
+t3_TA_rhy_minus_no_comp_q5 = post_preds_diffs_summary_long %>% filter(variable == "t3_TA_rhy_minus_no_comp") %>% pull(q5)
+t3_TA_rhy_minus_no_comp_q95 = post_preds_diffs_summary_long %>% filter(variable == "t3_TA_rhy_minus_no_comp") %>% pull(q95)
+t3_TA_rhy_minus_no_comp_abovezero = post_preds_diffs_summary_long %>% filter(variable == "t3_TA_rhy_minus_no_comp") %>% pull(abovezero)
+```
+
+Across conditions and blocks, fixations to the target increased as the stimulus unfolded (t0: $M=$ `r t0_target_m`, 
+$90\%~\text{CrI}=$ [`r t0_target_q5`, `r t0_target_q95`]; 
+t1: $M=$ `r t1_target_m`, 
+$90\%~\text{CrI}=$ [`r t1_target_q5`, `r t1_target_q95`];
+t2: $M=$ `r t2_target_m`, 
+$90\%~\text{CrI}=$ [`r t2_target_q5`, `r t2_target_q95`];
+t3: $M=$ `r t3_target_m`,
+$90\%~\text{CrI}=$ [`r t3_target_q5`, `r t3_target_q95`]). Fixations to the competitor in the Early competition condition peaked early and decreased in the third and fourth time windows (t0: $M=$ `r t0_comp_coh_m`, 
+$90\%~\text{CrI}=$ [`r t0_comp_coh_q5`, `r t0_comp_coh_q95`]; 
+t1: $M=$ `r t1_comp_coh_m`, 
+$90\%~\text{CrI}=$ [`r t1_comp_coh_q5`, `r t1_comp_coh_q95`];
+t2: $M=$ `r t2_comp_coh_m`, 
+$90\%~\text{CrI}=$ [`r t2_comp_coh_q5`, `r t2_comp_coh_q95`];
+t3: $M=$ `r t3_comp_coh_m`,
+$90\%~\text{CrI}=$ [`r t3_comp_coh_q5`, `r t3_comp_coh_q95`]), while those in the Late competition condition remained elevated in the latest time window (t0: $M=$ `r t0_comp_rhy_m`, 
+$90\%~\text{CrI}=$ [`r t0_comp_rhy_q5`, `r t0_comp_rhy_q95`]; 
+t1: $M=$ `r t1_comp_rhy_m`, 
+$90\%~\text{CrI}=$ [`r t1_comp_rhy_q5`, `r t1_comp_rhy_q95`];
+t2: $M=$ `r t2_comp_rhy_m`, 
+$90\%~\text{CrI}=$ [`r t2_comp_rhy_q5`, `r t2_comp_rhy_q95`];
+t3: $M=$ `r t3_comp_rhy_m`,
+$90\%~\text{CrI}=$ [`r t3_comp_rhy_q5`, `r t3_comp_rhy_q95`]). 
+
+To quantify how much competitors capture attention in different conditions and time windows, I calculate the posterior estimate of the target advantage as the proportion of fixations to the target minus the proportion of fixations to the competitor or one of the distractors (chosen at random). Greater target advantage indicates more attention to the target relative to the competitor or distractor (i.e., less competition). Across conditions and blocks, the target advantage increased as the stimulus unfolded (t0: $M=$ `r t0_TA_m`, 
+$90\%~\text{CrI}=$ [`r t0_TA_q5`, `r t0_TA_q95`], 
+$p_{+}=$ `r t0_TA_abovezero`; 
+t1: $M=$ `r t1_TA_m`, 
+$90\%~\text{CrI}=$ [`r t1_TA_q5`, `r t1_TA_q95`], 
+$p_{+}=$ `r t1_TA_abovezero`;
+t2: $M=$ `r t2_TA_m`, 
+$90\%~\text{CrI}=$ [`r t2_TA_q5`, `r t2_TA_q95`], 
+$p_{+}=$ `r t2_TA_abovezero`;
+t3: $M=$ `r t3_TA_m`,
+$90\%~\text{CrI}=$ [`r t3_TA_q5`, `r t3_TA_q95`], 
+$p_{+}=$ `r t3_TA_abovezero`).
+In the pre-noun onset time window (t0), the target advantage did not differ by condition ($\Delta_{\text{Early - No Compet.}}=$ `r t0_TA_coh_minus_no_comp_m`,
+$90\%~\text{CrI}_{\text{Early - No Compet.}}=$ [`r t0_TA_coh_minus_no_comp_q5`, `r t0_TA_coh_minus_no_comp_q95`], 
+$p_{+}=$ `r t0_TA_coh_minus_no_comp_abovezero`,
+$\Delta_{\text{Late - No Compet.}}=$ `r t0_TA_rhy_minus_no_comp_m`,
+$90\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t0_TA_rhy_minus_no_comp_q5`, `r t0_TA_rhy_minus_no_comp_q95`], 
+$p_{+}=$ `r t0_TA_rhy_minus_no_comp_abovezero`). 
+In the second time window (t1), the target advantage was somewhat more likely to be larger in the No Competition condition than in the Early competition condition ($\Delta_{\text{Early - No Compet.}}=$ `r t1_TA_coh_minus_no_comp_m`,
+$90\%~\text{CrI}_{\text{Early - No Compet.}}=$ [`r t1_TA_coh_minus_no_comp_q5`, `r t1_TA_coh_minus_no_comp_q95`], 
+$p_{-}=$ `r 1-t1_TA_coh_minus_no_comp_abovezero`
+) or the Late Competition condition ($\Delta_{\text{Late - No Compet.}}=$ `r t1_TA_rhy_minus_no_comp_m`,
+$90\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t1_TA_rhy_minus_no_comp_q5`, `r t1_TA_rhy_minus_no_comp_q95`], 
+$p_{-}=$ `r 1-t1_TA_rhy_minus_no_comp_abovezero`), indicating competition from both early and late competitors in this window.
+In the third time window (t2), the target advantage was more likely to be larger in the No Competition condition than in the Early competition condition ($\Delta_{\text{Early - No Compet.}}=$ `r t2_TA_coh_minus_no_comp_m`,
+$90\%~\text{CrI}_{\text{Early - No Compet.}}=$ [`r t2_TA_coh_minus_no_comp_q5`, `r t2_TA_coh_minus_no_comp_q95`], 
+$p_{-}=$ `r 1-t2_TA_coh_minus_no_comp_abovezero`
+) or the Late Competition condition ($\Delta_{\text{Late - No Compet.}}=$ `r t2_TA_rhy_minus_no_comp_m`,
+$90\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t2_TA_rhy_minus_no_comp_q5`, `r t2_TA_rhy_minus_no_comp_q95`], 
+$p_{-}=$ `r 1-t2_TA_rhy_minus_no_comp_abovezero`).
+Finally, in the fourth time window (t3), the target advantage was more likely to be greater in the No Competition condition than in the Early competition condition ($\Delta_{\text{Early - No Compet.}}=$ `r t3_TA_coh_minus_no_comp_m`,
+$90\%~\text{CrI}_{\text{Early - No Compet.}}=$ [`r t3_TA_coh_minus_no_comp_q5`, `r t3_TA_coh_minus_no_comp_q95`], 
+$p_{-}=$ `r 1-t3_TA_coh_minus_no_comp_abovezero`
+) and the Late Competition condition ($\Delta_{\text{Late - No Compet.}}=$ `r t3_TA_rhy_minus_no_comp_m`,
+$90\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t3_TA_rhy_minus_no_comp_q5`, `r t3_TA_rhy_minus_no_comp_q95`], 
+$p_{-}=$ `r 1-t3_TA_rhy_minus_no_comp_abovezero`).
+
+
+## Listeners adapt to the noise in the environment 
+
+
+```{r pulling tau values for text}
+tau_summary = fit_g$summary(variables = c("tau[1]", "tau[2]", "tau[3]", "tau[4]", "tau[5]")) %>% 
+  mutate(
+    across(where(is.numeric), ~ round(.x, digits = 2))
+    )
+
+tau1_m = tau_summary %>% filter(variable == "tau[1]") %>% pull(mean) 
+tau1_q5 = tau_summary %>% filter(variable == "tau[1]") %>% pull(q5) 
+tau1_q95 = tau_summary %>% filter(variable == "tau[1]") %>% pull(q95) 
+
+tau2_m = tau_summary %>% filter(variable == "tau[2]") %>% pull(mean) 
+tau2_q5 = tau_summary %>% filter(variable == "tau[2]") %>% pull(q5) 
+tau2_q95 = tau_summary %>% filter(variable == "tau[2]") %>% pull(q95) 
+
+tau3_m = tau_summary %>% filter(variable == "tau[3]") %>% pull(mean) 
+tau3_q5 = tau_summary %>% filter(variable == "tau[3]") %>% pull(q5) 
+tau3_q95 = tau_summary %>% filter(variable == "tau[3]") %>% pull(q95) 
+
+tau4_m = tau_summary %>% filter(variable == "tau[4]") %>% pull(mean) 
+tau4_q5 = tau_summary %>% filter(variable == "tau[4]") %>% pull(q5) 
+tau4_q95 = tau_summary %>% filter(variable == "tau[4]") %>% pull(q95) 
+
+tau5_m = tau_summary %>% filter(variable == "tau[5]") %>% pull(mean) 
+tau5_q5 = tau_summary %>% filter(variable == "tau[5]") %>% pull(q5) 
+tau5_q95 = tau_summary %>% filter(variable == "tau[5]") %>% pull(q95) 
+
+tau_contrasts_summary = fit_g$summary(variables = c(
+  "initial_noise_effect", 
+  "noise_residual_effect",
+  "noise_contrast_effect",
+  "explain_away_effect",
+  "explained_noise_residual_effect")) %>% 
+  mutate(
+    across(where(is.numeric), ~ round(.x, digits = 2))
+    )
+
+initial_noise_effect_m = tau_contrasts_summary %>% filter(variable == "initial_noise_effect") %>% pull(mean) 
+initial_noise_effect_q5 = tau_contrasts_summary %>% filter(variable == "initial_noise_effect") %>% pull(q5) 
+initial_noise_effect_q95 = tau_contrasts_summary %>% filter(variable == "initial_noise_effect") %>% pull(q95) 
+
+noise_residual_effect_m = tau_contrasts_summary %>% filter(variable == "noise_residual_effect") %>% pull(mean) 
+noise_residual_effect_q5 = tau_contrasts_summary %>% filter(variable == "noise_residual_effect") %>% pull(q5) 
+noise_residual_effect_q95 = tau_contrasts_summary %>% filter(variable == "noise_residual_effect") %>% pull(q95) 
+
+noise_contrast_effect_m = tau_contrasts_summary %>% filter(variable == "noise_contrast_effect") %>% pull(mean) 
+noise_contrast_effect_q5 = tau_contrasts_summary %>% filter(variable == "noise_contrast_effect") %>% pull(q5) 
+noise_contrast_effect_q95 = tau_contrasts_summary %>% filter(variable == "noise_contrast_effect") %>% pull(q95) 
+
+explain_away_effect_m = tau_contrasts_summary %>% filter(variable == "explain_away_effect") %>% pull(mean) 
+explain_away_effect_q5 = tau_contrasts_summary %>% filter(variable == "explain_away_effect") %>% pull(q5) 
+explain_away_effect_q95 = tau_contrasts_summary %>% filter(variable == "explain_away_effect") %>% pull(q95) 
+
+explained_noise_residual_effect_m = tau_contrasts_summary %>% filter(variable == "explained_noise_residual_effect") %>% pull(mean) 
+explained_noise_residual_effect_q5 = tau_contrasts_summary %>% filter(variable == "explained_noise_residual_effect") %>% pull(q5) 
+explained_noise_residual_effect_q95 = tau_contrasts_summary %>% filter(variable == "explained_noise_residual_effect") %>% pull(q95) 
+```
+
+
+In addition to demonstrating that the competition condition effects are well captured by a Bayesian noisy-channel model, analysis of the posterior reveals that listeners adapt their estimate of the noise probability, $\tau$, in response to the noise in the environment, based on multiple sources of information. Figure\ \@ref(fig:tau-effects-plots)A summarizes
+the posterior predictions of the timecourse of fixation proportions to targets and competitors across competition conditions, comparing all *Intact* blocks and *Noisy* blocks. Added noise in fillers decreases fixations to the target across competition conditions suggesting that $\tau$ is lower in the *Intact* blocks. 
+The posterior estimates of $\tau$ values by block type and contrasts between blocks are summarized in Figures\ \@ref(fig:tau-effects-plots)B and C. The lowest $\tau$ is observed in the first *Intact* block which did not contain added noise on filler trials ($M=$ `r tau1_m`, 
+$90\%~\text{CrI}=$ [`r tau1_q5`, `r tau1_q95`]). The highest $\tau$ is observed in the first *Noisy* block ($M=$ `r tau2_m`, 
+$90\%~\text{CrI}=$ [`r tau2_q5`, `r tau2_q95`],
+$\Delta=$ `r initial_noise_effect_m`,
+$90\%~\text{CrI}=$ [`r initial_noise_effect_q5`, `r initial_noise_effect_q95`]), indicating that listeners increase their noise estimates when there is an elevated frequency of acoustic noise in their environment. 
+$\tau$ was higher for the *Intact* block when it was preceded by a *Noisy* block ($M=$ `r tau4_m`, 
+$90\%~\text{CrI}=$ [`r tau4_q5`, `r tau4_q95`],
+$\Delta=$ `r noise_residual_effect_m`,
+$90\%~\text{CrI}=$ [`r noise_residual_effect_q5`, `r noise_residual_effect_q95`]) suggesting that the estimate of noise is based on continuous perceptual evidence accumulation. Similarly, $\tau$ was lower for the *Noisy* block when it was preceded by an *Intact* block ($M=$ `r tau3_m`, 
+$90\%~\text{CrI}=$ [`r tau3_q5`, `r tau3_q95`],
+$\Delta=$ `r noise_contrast_effect_m`,
+$90\%~\text{CrI}=$ [`r noise_contrast_effect_q5`, `r noise_contrast_effect_q95`]). Finally, $\tau$ was lower for the *Intact* block preceded by a *Noisy* block if the participant was explicitly informed that there was an error in the previous block and that the following set of stimuli would not contain acoustic noise ($M=$ `r tau5_m`, 
+$90\%~\text{CrI}=$ [`r tau5_q5`, `r tau5_q95`],
+$\Delta=$ `r explain_away_effect_m`,
+$90\%~\text{CrI}=$ [`r explain_away_effect_q5`, `r explain_away_effect_q95`]). In addition to accumulating perceptual evidence, listeners can also flexibly update their noise estimates based on a verbal characterization, which "explains away" the presence of noise.
+
