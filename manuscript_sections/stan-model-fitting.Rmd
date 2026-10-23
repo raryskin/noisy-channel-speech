@@ -10,15 +10,71 @@ options(mc.cores = 4)
 ```
 
 
-```{r}
+```{r reading in similarities}
 
 trial_info = read_csv("../data/trial_info.csv") %>% 
   filter(!str_detect(Condition, "Filler")) 
 
-sim_by_layer_tw = read_csv("../data/average_dtw_similarities_by_layer_by_timewindows.csv")
+sim_by_layer_timeseries = read_csv("../audio_similarities/incremental_dtw_similarities_by_layer.csv")
+
+sim_by_layer_tw = sim_by_layer_timeseries %>% 
+  left_join(onsets_w, by = c("fileA" = "word")) %>% 
+  mutate(tw = case_when(
+    between(time, 0, Onset_t1) ~ "t0",
+    between(time, Onset_t1, Offset_t1) ~ "t1",
+    between(time, Onset_t2, Offset_t2) ~ "t2",
+    between(time, Onset_t3, Offset_t3) ~ "t3")) %>% 
+  filter(!is.na(tw)) %>% 
+  group_by(fileA, fileB, layer, tw) %>% 
+  summarize(mean_sim = mean(similarity, na.rm = T))
 
 ```
-```{r}
+```{r plot of dtw similarity timeseries}
+beaker_onsets = onsets_w %>% filter(word == "beaker")
+
+p_sims<-ggplot(sim_by_layer_timeseries %>% 
+         filter(fileA == "beaker", fileB == "speaker"))+
+  geom_vline(aes(xintercept = beaker_onsets %>% pull(Onset_t1)), linetype = "dashed",
+           color = "darkgrey" )+
+  geom_vline(aes(xintercept = beaker_onsets %>% pull(Onset_t2)), linetype = "dashed",
+           color = "darkgrey" )+
+  geom_vline(aes(xintercept = beaker_onsets %>% pull(Onset_t3)), linetype = "dashed",
+           color = "darkgrey" )+
+  geom_vline(aes(xintercept = beaker_onsets %>% pull(Offset_t3)), linetype = "dashed",
+           color = "darkgrey" )+
+  annotate(geom = "text", 
+           x = ((beaker_onsets %>% pull(Onset_t1))/2),
+           y = 0.7,
+           label = "t0")+
+  annotate(geom = "text", 
+           x = beaker_onsets %>% pull(Onset_t1) + ((beaker_onsets %>% pull(Duration_t1))/2),
+           y = 0.7,
+           label = "t1" )+
+  annotate(geom = "text", 
+           x = beaker_onsets %>% pull(Onset_t2) + ((beaker_onsets %>% pull(Duration_t2))/2),
+           y = 0.7,
+           label = "t2" )+
+  annotate(geom = "text", 
+           x = beaker_onsets %>% pull(Onset_t3) + ((beaker_onsets %>% pull(Duration_t3))/2),
+           y = 0.7,
+           label = "t3" )+
+  stat_summary(aes(x = time, y = similarity, color = layer, group = layer), geom = "line", linewidth = .5)+
+  scale_color_viridis_c(direction = -1, option = "turbo", guide = "none" )+
+  labs(y = "Cosine Similarity", x = "Time (seconds)")+
+  coord_cartesian(ylim = c(0.68, 1.0))+
+  theme_classic()
+
+p_sims_tw <- ggplot(sim_by_layer_tw %>% 
+         filter(fileA == "beaker", fileB == "speaker", 
+                layer %in% c(0, 10, 20, 30, 40, 47)))+
+  stat_summary(aes(x = tw, y = mean_sim, color = layer, group = layer), geom = "line", linewidth = 1)+
+  stat_summary(aes(x = tw, y = mean_sim, color = layer, group=layer), geom = "point", size = 3)+
+  scale_color_viridis_c(direction = -1, option = "turbo")+
+  labs(y = "Mean Cosine Similarity", x = "Time window")+
+  theme_classic()
+```
+
+```{r prepping ET data for Stan format}
 
 # prepping ET data for Stan format
 
@@ -192,11 +248,11 @@ for (L in 1:num_layers) {
   loo_results[[L]] <- layer_loo
 }
 
-saveRDS(loo_results,"rdata/loo_results2_01102026.rds")
+saveRDS(loo_results,"rdata/loo_results2_21102026.rds")
 ```
 
 ```{r}
-loo_results = read_rds("rdata/loo_results2_01102026.rds")
+loo_results = read_rds("rdata/loo_results2_21102026.rds")
 ```
 
 
@@ -218,6 +274,10 @@ tied_models <- comparison_df %>%
   filter(is_tied_with_best == TRUE) 
 
 #print(tied_models)
+best_layer = tied_models %>% filter(elpd_diff == 0) %>% pull(layer)
+num_tied_layers = length(tied_models$layer)
+min_tied_layer = min(tied_models$layer)
+max_tied_layer = max(tied_models$layer)
 
 p_ELPD_model_layers<-ggplot(comparison_df)+
   geom_line(aes(x = layer, y = elpd_loo), linewidth = 1)+
@@ -234,7 +294,7 @@ p_ELPD_model_layers<-ggplot(comparison_df)+
 # prepping data using average similarities from top layers
 
 ET_data_by_items_conds_tws_avglayer = ET_data_by_items_conds_tws %>% 
-  filter(layer %in% tied_models$layer) %>%  # 6, 8,9,10
+  filter(layer %in% tied_models$layer) %>%  
   group_by(ItemNum, Condition, BlockType, tw, Pic1, Pic2, Pic3, Pic4, mean_target_prop, mean_compet_prop, mean_dist1_prop, mean_dist2_prop, y_col1, y_col2, y_col3, y_col4) %>% 
   summarize(sim_avglayer_target = mean(sim_target),
          sim_avglayer_compet = mean(sim_compet),
@@ -276,11 +336,11 @@ fit_avg <- model$sample(data = stan_data_avg,
                          refresh = 0 ,
                          output_dir = "stan_files/model_log_domain_weak_priors_avg" )
 
-saveRDS(fit_avg,"rdata/layer_avg_stan_model_fit_01102026.rds")
+saveRDS(fit_avg,"rdata/layer_avg_stan_model_fit_21102026.rds")
 ```
 
 ```{r fit stan model avg over layers}
-fit_avg = read_rds("rdata/layer_avg_stan_model_fit_01102026.rds")
+fit_avg = read_rds("rdata/layer_avg_stan_model_fit_21102026.rds")
 ```
 
 ```{r, eval = F}
@@ -295,7 +355,7 @@ file.exists(fit_avg$output_files())
 ```
 
 ```{r, eval = FALSE}
-bayesplot::mcmc_pairs(fit2_avg$draws(c("tau[1]","tau[2]","tau[3]","tau[4]","tau[5]","phi")))
+bayesplot::mcmc_pairs(fit_avg$draws(c("tau[1]","tau[2]","tau[3]","tau[4]","tau[5]","phi")))
 # no excessive tradeoff between phi and any tau/no identifiability issue
 
 fit_avg$diagnostic_summary() # no convergence issues
@@ -340,18 +400,18 @@ stan_data_g <- list(
 # Fit the model with generic similarities based on the same best layers 
 fit_g <- model$sample(data = stan_data_g, chains = 4, parallel_chains = 4, refresh = 0, 
                       output_dir = "stan_files/model_log_domain_weak_priors_g")
-saveRDS(fit_g,"rdata/generic_stan_model_fit2_01102026.rds")
+saveRDS(fit_g,"rdata/generic_stan_model_fit2_21102026.rds")
 ```
 
 ```{r, eval = FALSE}
-bayesplot::mcmc_pairs(fit2_g$draws(c("tau[1]","tau[2]","tau[3]","tau[4]","tau[5]","phi")))
+bayesplot::mcmc_pairs(fit_g$draws(c("tau[1]","tau[2]","tau[3]","tau[4]","tau[5]","phi")))
 # no excessive tradeoff between phi and any tau/no identifiability issue
 
 fit_g$diagnostic_summary() # all good
 ```
 
 ```{r}
-fit_g = read_rds("rdata/generic_stan_model_fit2_01102026.rds")
+fit_g = read_rds("rdata/generic_stan_model_fit2_21102026.rds")
 ```
 
 ```{r}
@@ -417,16 +477,16 @@ for (L in 1:num_layers) {
   g_loo_results[[L]] <- L_g_loo
 }
 
-saveRDS(g_loo_results,"rdata/g_loo_results_01102026.rds")
+saveRDS(g_loo_results,"rdata/g_loo_results_21102026.rds")
 ```
 
 ```{r, warning=F}
-g_loo_results = read_rds("rdata/g_loo_results_01102026.rds")
+g_loo_results = read_rds("rdata/g_loo_results_21102026.rds")
 comparison_g_L <- loo_compare(g_loo_results)
 ```
 
 
-```{r}
+```{r layer-wise ELPD}
 comparison_g_df = as_tibble(comparison_g_L) %>% 
   mutate(layer = parse_number(rownames(comparison_g_L)),
          is_tied_with_best = abs(elpd_diff) <= 2 * se_diff 
@@ -436,6 +496,7 @@ tied_g_models <- comparison_g_df %>%
   filter(is_tied_with_best == TRUE) 
 
 #print(tied_g_models)
+best_g_layer = tied_g_models %>% filter(elpd_diff==0) %>% pull(layer)
 
 p_layers<-ggplot(comparison_g_df)+
   geom_line(aes(x = layer, y = elpd_loo), linewidth = 1)+
@@ -452,7 +513,10 @@ p_layers<-ggplot(comparison_g_df)+
   theme(legend.position = "none")
 ```
 
-(ref:hubert-plot-caption) Acoustic analysis pipeline. **(A)** The HuBERT model was used to extract embeddings across layers for target, competitor, and distractor audio. Pairs of audio stimuli were aligned using dynamic time warping. **(B)** Cosine similarity was calculated per frame for each layer and then averaged within four time windows of interest (t0, t1, t2, t3) in order to be used for fitting to eye-tracking data. **(C)** Performance of the model in predicting eye-tracking data was compared across HuBERT layers. Layer 10 (red point) was found to lead to the best performance. Layer 9 (orange) had comparable performance. The gray ribbon indicates the 2 x standard error of the difference in ELPD relative to the best performing layer. An average across comparably performing layers was used in the analysis.
+
+
+
+(ref:hubert-plot-caption) Acoustic analysis pipeline. **(A)** The HuBERT model was used to incrementally extract embeddings across layers for target, competitor, and distractor audio. Audio files were annotated for four time windows of interest (t0 = pre-noun, t1 = onset of noun to disambiguation, t2 = onset of disambiguating phoneme to offset of disambiguating phoneme, t3 = offset of disambiguating phoneme to offset of noun). Pairs of audio stimuli were aligned using dynamic time warping. **(B)** Cosine similarity was calculated per frame for each layer. Similarity timeseries for "beaker"-"speaker" pair is shown. Time windows are based on the timestamps of "beaker." **(C)** Cosine similarities were then averaged within four time windows of interest (t0, t1, t2, t3) for each layer (subset of layers shown for clarity) in order to be used for fitting to eye-tracking data.  **(D)** Performance of the model in predicting eye-tracking data was compared across HuBERT layers. Orange point indicates the layer that led to the best performance. The gray ribbon indicates the 2 x standard error of the difference in ELPD relative to the best performing layer.
 
 ```{r hubert-plot, fig.cap = "(ref:hubert-plot-caption)", fig.width = 8, fig.height = 5, dpi = 300}
 
@@ -464,19 +528,16 @@ pipeline_img_raw <- magick::image_trim(pipeline_img_raw)
 p_pipeline_image <- magick::image_ggplot(pipeline_img_raw)
 p_pipeline_image_final <- free(p_pipeline_image, side = "l")
 
-p_similarities<-readRDS("../data/p_sims.rds")
-p_sims = p_similarities$p_sims
-beaker_onsets = p_similarities$beaker_onsets
-
 layout_design <- "
-  AA
-  BC
+  AAA
+  BCD
 "
 
 pipeline_layout <- wrap_plots(
   A = p_pipeline_image_final, 
-  B = p_sims, 
-  C = p_layers, 
+  B = p_sims,
+  C = p_sims_tw,
+  D = p_layers, 
   design = layout_design
 ) + 
 plot_layout(
@@ -489,11 +550,11 @@ plot_layout(
 pipeline_layout
 ```
 
-```{r getting generic similarities for avg of layers}
+```{r getting generic similarities for best layers}
 
 
 ET_data_by_items_conds_tws_avglayer_g = ET_data_by_items_conds_tws %>% 
-  filter(layer %in% tied_g_models$layer) %>%  # 9, 10, 
+  filter(layer %in% tied_g_models$layer) %>%  
   group_by(ItemNum, Condition, BlockType, tw, Pic1, Pic2, Pic3, Pic4, mean_target_prop, mean_compet_prop, mean_dist1_prop, mean_dist2_prop, y_col1, y_col2, y_col3, y_col4) %>% 
   summarize(sim_avglayer_target = mean(sim_target),
          sim_avglayer_compet = mean(sim_compet),
@@ -536,7 +597,7 @@ stan_data_avg_g <- list(
 # Fit the model
 fit_avg_g <- model$sample(data = stan_data_avg_g, chains = 4, parallel_chains = 4, refresh = 0, 
                       output_dir = "stan_files/model_log_domain_weak_priors_avg_g")
-saveRDS(fit_avg_g,"rdata/avg_generic_stan_model_fit_01102026.rds")
+saveRDS(fit_avg_g,"rdata/avg_generic_stan_model_fit_21102026.rds")
 ```
 
 ```{r, eval = FALSE}
@@ -546,7 +607,7 @@ bayesplot::mcmc_pairs(fit_avg_g$draws(c("tau[1]","tau[2]","tau[3]","tau[4]","tau
 ```
 
 ```{r}
-fit_avg_g = read_rds("rdata/avg_generic_stan_model_fit_01102026.rds")
+fit_avg_g = read_rds("rdata/avg_generic_stan_model_fit_21102026.rds")
 ```
 
 ```{r}
@@ -558,6 +619,7 @@ fit_avg_g = read_rds("rdata/avg_generic_stan_model_fit_01102026.rds")
 
 ```{r elpd comparison}
 elpd_comparison<-loo_compare(avg_loo, g_loo, avg_g_loo)
+# stim-specific, averaging over stim-specific layers, generic sim of the best layer
 elpd_comparison_item_v_g<-loo_compare(avg_loo, g_loo)
 elpd_comparison_item_v_avg_g<-loo_compare(avg_loo, avg_g_loo)
 elpd_comparison_g_v_avg_g<-loo_compare(g_loo, avg_g_loo)
@@ -652,12 +714,12 @@ yrep_draws <- fit_avg_g  %>%
 post_preds = yrep_draws %>% 
   left_join(long_data |> mutate(ROI = as.numeric(ROI)), by = c("row", "ROI"))
 
-saveRDS(post_preds, "rdata/posterior_preds_stan_fit_avg_g_01102026.rds")
+saveRDS(post_preds, "rdata/posterior_preds_stan_fit_avg_g_21102026.rds")
 ```
 
 ```{r}
 
-post_preds = read_rds("rdata/posterior_preds_stan_fit_avg_g_01102026.rds")
+post_preds = read_rds("rdata/posterior_preds_stan_fit_avg_g_21102026.rds")
 ```
 
 ```{r get draws expected posterior, eval = F}
@@ -670,12 +732,12 @@ epp_draws <- fit_avg_g %>%
     by = c("row", "ROI")
   )
 
-saveRDS(epp_draws, "rdata/expected_posterior_preds_stan_fit_avg_g_02102026.rds")
+saveRDS(epp_draws, "rdata/expected_posterior_preds_stan_fit_avg_g_21102026.rds")
 ```
 
 ```{r, eval = F}
 # skip
-epp_draws = read_rds("rdata/expected_posterior_preds_stan_fit_avg_g_02102026.rds")
+epp_draws = read_rds("rdata/expected_posterior_preds_stan_fit_avg_g_21102026.rds")
 ```
 
 ```{r summarizing post preds}
@@ -920,12 +982,16 @@ post_means_CrIs_comp_cond_tw_TA_diff = post_preds_summary %>%
   mutate(
     t0_TA_coh_minus_no_comp = `t0_TA_Cohort competition`-`t0_TA_No competition`,
     t0_TA_rhy_minus_no_comp = `t0_TA_Rhyme competition`-`t0_TA_No competition`,
+    t0_TA_coh_minus_rhy_comp = `t0_TA_Cohort competition`-`t0_TA_Rhyme competition`,
     t1_TA_coh_minus_no_comp = `t1_TA_Cohort competition`-`t1_TA_No competition`,
     t1_TA_rhy_minus_no_comp = `t1_TA_Rhyme competition`-`t1_TA_No competition`,
+    t1_TA_coh_minus_rhy_comp = `t1_TA_Cohort competition`-`t1_TA_Rhyme competition`,
     t2_TA_coh_minus_no_comp = `t2_TA_Cohort competition`-`t2_TA_No competition`,
-    t2_TA_rhy_minus_no_comp = `t2_TA_Rhyme competition`-`t2_TA_No competition`, 
+    t2_TA_rhy_minus_no_comp = `t2_TA_Rhyme competition`-`t2_TA_No competition`,
+    t2_TA_coh_minus_rhy_comp = `t2_TA_Cohort competition`-`t2_TA_Rhyme competition`,
     t3_TA_coh_minus_no_comp = `t3_TA_Cohort competition`-`t3_TA_No competition`, 
-    t3_TA_rhy_minus_no_comp = `t3_TA_Rhyme competition`-`t3_TA_No competition`) %>% 
+    t3_TA_rhy_minus_no_comp = `t3_TA_Rhyme competition`-`t3_TA_No competition`,
+    t3_TA_coh_minus_rhy_comp = `t3_TA_Cohort competition`-`t3_TA_Rhyme competition`,) %>% 
   summarize(across(
       .cols = -c(.draw), 
       .fns = list(
@@ -1256,11 +1322,12 @@ free(p_noisy_v_intact_tw_preds) / tau_plot / contrast_plot +
 
 To fit the Bayesian model to the eye-tracking data and estimate $\tau$ values across different block conditions, the eye-tracking data were first downsampled to four time windows of interest and then averaged across participants for each item and condition (Figure\ \@ref(fig:model-posteriors-plots)A-B). Proportions of fixations to all four regions of interest (ROIs) were simultaneously modeled with a Dirichlet distribution. Given that the similarity timeseries differed across layers (Figure\ \@ref(fig:hubert-plot)B), we evaluated several versions of the noise likelihood to determine the granularity of information that best predicted eye-gaze. Model performance was compared using leave-one-out cross-validation to estimate expected log-pointwise predictive density (ELPD-LOO). A difference in ELPD was considered significant if it exceeded two times the standard error of the ELPD difference between models [@sivula2025Uncertainty]. 
 Models built on *stimulus-specific* similarities were compared against those using *generic* similarities (i.e., averaging target-candidate similarity for a given condition across all stimulus pairs).
-First, a series of models were fitted with stimulus-specific similarities from each HuBERT layer. Layers 6, 8, 9 and 10 yielded the best performance, with layer 10 having the nominally highest ELPD. 
-Then, a model using stimulus-specific similarities averaged across layers 6, 8, 9, and 10 was fitted. 
-Next, the layer-wise evaluation was repeated using generic similarities. Layers 9 and 10 lead to the best performance, with layer 10 having the nominally highest ELPD again (Figure\ \@ref(fig:hubert-plot)C). Thus, a combined model using generic similarities averaged across layers 9 and 10 was fitted.
-A hybrid model using generic similarities averaged across layers 6, 8, 9, and 10 was also fit for direct comparison with the stimulus-specific model.
-The three models using similarities averaged across layers were compared. Performance was lower for the model using stimulus-specific similarities averaging across layers 6, 8, 9, 10 ($\text{ELPD-LOO} =$ `r elpd_comparison["model1",]["elpd_loo"]`, $SE_{\text{ELPD-LOO}} =$ `r elpd_comparison["model1",]["se_elpd_loo"]`) compared to the model with generic similarities averaging across layers 6, 8, 9, and 10 ($\text{ELPD-LOO} =$ `r elpd_comparison["model2",]["elpd_loo"]`, $SE_{\text{ELPD-LOO}} =$ `r elpd_comparison["model2",]["se_elpd_loo"]`, $\Delta =$ `r elpd_comparison_item_v_g[2,]["elpd_diff"]`, $SE_{\Delta} =$ `r elpd_comparison_item_v_g[2,]["se_diff"]`) and the model with generic similarities averaging across layers 9 and 10 ($\text{ELPD-LOO} =$ `r elpd_comparison["model3",]["elpd_loo"]`, $SE_{\text{ELPD-LOO}} =$ `r elpd_comparison["model3",]["se_elpd_loo"]`, $\Delta =$ `r elpd_comparison_item_v_avg_g[2,]["elpd_diff"]`, $SE_{\Delta} =$ `r elpd_comparison_item_v_avg_g[2,]["se_diff"]`). The model using generic similarities averaged over layers 9 and 10 performed slightly better than that which averaged over layers 6, 8, 9, and 10 ($\Delta =$ `r elpd_comparison_g_v_avg_g[2,]["elpd_diff"]`, $SE_{\Delta} =$ `r elpd_comparison_g_v_avg_g[2,]["se_diff"]`) and was adopted for further analyses.
+First, a series of models were fitted with stimulus-specific similarities from each HuBERT layer. Layer `r best_layer` yielded the best performance, with `r num_tied_layers` layers (ranging from `r min_tied_layer` to `r max_tied_layer`) with only nominally lower ELPDs. 
+Then, a model using stimulus-specific similarities averaged across all `r num_tied_layers` best-fitting layers was fitted. 
+Next, the layer-wise evaluation was repeated using generic similarities. Layer `r best_g_layer` lead to significantly better performance than all other layers (Figure\ \@ref(fig:hubert-plot)C). 
+A hybrid model using generic similarities averaged across the `r num_tied_layers` layers found using the stimulus-specific similarities was also fit for direct comparison with the stimulus-specific model.
+
+Performance was lower for the model using stimulus-specific similarities averaging across `r num_tied_layers` layers ($\text{ELPD-LOO} =$ `r elpd_comparison["model1",]["elpd_loo"]`, $SE_{\text{ELPD-LOO}} =$ `r elpd_comparison["model1",]["se_elpd_loo"]`) compared to the model with generic similarities from layer `r best_g_layer` ($\text{ELPD-LOO} =$ `r elpd_comparison["model3",]["elpd_loo"]`, $SE_{\text{ELPD-LOO}} =$ `r elpd_comparison["model3",]["se_elpd_loo"]`, $\Delta =$ `r elpd_comparison_item_v_avg_g[2,]["elpd_diff"]`, $SE_{\Delta} =$ `r elpd_comparison_item_v_avg_g[2,]["se_diff"]`) and the model with generic similarities averaging across `r num_tied_layers` layers ($\text{ELPD-LOO} =$ `r elpd_comparison["model2",]["elpd_loo"]`, $SE_{\text{ELPD-LOO}} =$ `r elpd_comparison["model2",]["se_elpd_loo"]`, $\Delta =$ `r elpd_comparison_item_v_g[2,]["elpd_diff"]`, $SE_{\Delta} =$ `r elpd_comparison_item_v_g[2,]["se_diff"]`). The model using generic similarities from layer `r best_g_layer` performed better than that which averaged over layers ($\Delta =$ `r elpd_comparison_g_v_avg_g[2,]["elpd_diff"]`, $SE_{\Delta} =$ `r elpd_comparison_g_v_avg_g[2,]["se_diff"]`) and was adopted for further analyses.
 
 
 
@@ -1366,6 +1433,11 @@ t0_TA_rhy_minus_no_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(v
 t0_TA_rhy_minus_no_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t0_TA_rhy_minus_no_comp") %>% pull(q97.5)
 t0_TA_rhy_minus_no_comp_abovezero = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t0_TA_rhy_minus_no_comp") %>% pull(abovezero)
 
+t0_TA_coh_minus_rhy_comp_m = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t0_TA_coh_minus_rhy_comp") %>% pull(m)
+t0_TA_coh_minus_rhy_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t0_TA_coh_minus_rhy_comp") %>% pull(q2.5)
+t0_TA_coh_minus_rhy_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t0_TA_coh_minus_rhy_comp") %>% pull(q97.5)
+t0_TA_coh_minus_rhy_comp_abovezero = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t0_TA_coh_minus_rhy_comp") %>% pull(abovezero)
+
 t1_TA_coh_minus_no_comp_m = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_coh_minus_no_comp") %>% pull(m)
 t1_TA_coh_minus_no_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_coh_minus_no_comp") %>% pull(q2.5)
 t1_TA_coh_minus_no_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_coh_minus_no_comp") %>% pull(q97.5)
@@ -1375,6 +1447,11 @@ t1_TA_rhy_minus_no_comp_m = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(vari
 t1_TA_rhy_minus_no_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_rhy_minus_no_comp") %>% pull(q2.5)
 t1_TA_rhy_minus_no_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_rhy_minus_no_comp") %>% pull(q97.5)
 t1_TA_rhy_minus_no_comp_abovezero = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_rhy_minus_no_comp") %>% pull(abovezero)
+
+t1_TA_coh_minus_rhy_comp_m = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_coh_minus_rhy_comp") %>% pull(m)
+t1_TA_coh_minus_rhy_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_coh_minus_rhy_comp") %>% pull(q2.5)
+t1_TA_coh_minus_rhy_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_coh_minus_rhy_comp") %>% pull(q97.5)
+t1_TA_coh_minus_rhy_comp_abovezero = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t1_TA_coh_minus_rhy_comp") %>% pull(abovezero)
 
 t2_TA_coh_minus_no_comp_m = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t2_TA_coh_minus_no_comp") %>% pull(m)
 t2_TA_coh_minus_no_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t2_TA_coh_minus_no_comp") %>% pull(q2.5)
@@ -1386,6 +1463,11 @@ t2_TA_rhy_minus_no_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(v
 t2_TA_rhy_minus_no_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t2_TA_rhy_minus_no_comp") %>% pull(q97.5)
 t2_TA_rhy_minus_no_comp_abovezero = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t2_TA_rhy_minus_no_comp") %>% pull(abovezero)
 
+t2_TA_coh_minus_rhy_comp_m = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t2_TA_coh_minus_rhy_comp") %>% pull(m)
+t2_TA_coh_minus_rhy_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t2_TA_coh_minus_rhy_comp") %>% pull(q2.5)
+t2_TA_coh_minus_rhy_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t2_TA_coh_minus_rhy_comp") %>% pull(q97.5)
+t2_TA_coh_minus_rhy_comp_abovezero = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t2_TA_coh_minus_rhy_comp") %>% pull(abovezero)
+
 t3_TA_coh_minus_no_comp_m = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_coh_minus_no_comp") %>% pull(m)
 t3_TA_coh_minus_no_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_coh_minus_no_comp") %>% pull(q2.5)
 t3_TA_coh_minus_no_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_coh_minus_no_comp") %>% pull(q97.5)
@@ -1395,6 +1477,11 @@ t3_TA_rhy_minus_no_comp_m = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(vari
 t3_TA_rhy_minus_no_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_rhy_minus_no_comp") %>% pull(q2.5)
 t3_TA_rhy_minus_no_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_rhy_minus_no_comp") %>% pull(q97.5)
 t3_TA_rhy_minus_no_comp_abovezero = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_rhy_minus_no_comp") %>% pull(abovezero)
+
+t3_TA_coh_minus_rhy_comp_m = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_coh_minus_rhy_comp") %>% pull(m)
+t3_TA_coh_minus_rhy_comp_q2.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_coh_minus_rhy_comp") %>% pull(q2.5)
+t3_TA_coh_minus_rhy_comp_q97.5 = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_coh_minus_rhy_comp") %>% pull(q97.5)
+t3_TA_coh_minus_rhy_comp_abovezero = post_means_CrIs_comp_cond_tw_TA_diff %>% filter(variable == "t3_TA_coh_minus_rhy_comp") %>% pull(abovezero)
 ```
 
 
@@ -1438,15 +1525,20 @@ $95\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t0_TA_rhy_minus_no_comp_q2.5`,
 In the second time window (t1), the target advantage is more likely to be larger in the No Competition condition than in the Early competition condition ($\Delta_{\text{Early - No Compet.}}=$ `r t1_TA_coh_minus_no_comp_m`,
 $95\%~\text{CrI}_{\text{Early - No Compet.}}=$ [`r t1_TA_coh_minus_no_comp_q2.5`, `r t1_TA_coh_minus_no_comp_q97.5`]
 ) or the Late Competition condition ($\Delta_{\text{Late - No Compet.}}=$ `r t1_TA_rhy_minus_no_comp_m`,
-$95\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t1_TA_rhy_minus_no_comp_q2.5`, `r t1_TA_rhy_minus_no_comp_q97.5`]), indicating competition from both early and late competitors in this window.
+$95\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t1_TA_rhy_minus_no_comp_q2.5`, `r t1_TA_rhy_minus_no_comp_q97.5`]), indicating competition from both early and late competitors in this window. The target advantage was reduced in the Early Competition condition relative to the Late Competition condition ($\Delta_{\text{Early - Late}}=$ `r t1_TA_coh_minus_rhy_comp_m`,
+$95\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t1_TA_coh_minus_rhy_comp_q2.5`, `r t1_TA_coh_minus_rhy_comp_q97.5`]), indicating greater competition from the early competitors in this window.
 In the third time window (t2), the target advantage is more likely to be larger in the No Competition condition than in the Early competition condition ($\Delta_{\text{Early - No Compet.}}=$ `r t2_TA_coh_minus_no_comp_m`,
 $95\%~\text{CrI}_{\text{Early - No Compet.}}=$ [`r t2_TA_coh_minus_no_comp_q2.5`, `r t2_TA_coh_minus_no_comp_q97.5`]
 ) or the Late Competition condition ($\Delta_{\text{Late - No Compet.}}=$ `r t2_TA_rhy_minus_no_comp_m`,
 $95\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t2_TA_rhy_minus_no_comp_q2.5`, `r t2_TA_rhy_minus_no_comp_q97.5`]).
+The target advantage was nominally increased in the Early Competition condition relative to the Late Competition condition ($\Delta_{\text{Early - Late}}=$ `r t2_TA_coh_minus_rhy_comp_m`,
+$95\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t2_TA_coh_minus_rhy_comp_q2.5`, `r t2_TA_coh_minus_rhy_comp_q97.5`]), indicating similar competition from the early and late competitors in this window.
 Finally, in the fourth time window (t3), the target advantage is more likely to be greater in the No Competition condition than in the Early competition condition ($\Delta_{\text{Early - No Compet.}}=$ `r t3_TA_coh_minus_no_comp_m`,
 $95\%~\text{CrI}_{\text{Early - No Compet.}}=$ [`r t3_TA_coh_minus_no_comp_q2.5`, `r t3_TA_coh_minus_no_comp_q97.5`]) and the Late Competition condition ($\Delta_{\text{Late - No Compet.}}=$ `r t3_TA_rhy_minus_no_comp_m`,
 $95\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t3_TA_rhy_minus_no_comp_q2.5`, `r t3_TA_rhy_minus_no_comp_q97.5`]). 
-In sum, the posterior estimates capture the critical patterns observed in the eye-tracking data (Figure\ \@ref(fig:model-posteriors-plots)E), though there are discrepancies worth noting (e.g., over-prediction of fixations to Late Competitors), which I return to in the Discussion.
+The target advantage was increased in the Early Competition condition relative to the Late Competition condition ($\Delta_{\text{Early - Late}}=$ `r t3_TA_coh_minus_rhy_comp_m`,
+$95\%~\text{CrI}_{\text{Late - No Compet.}}=$ [`r t3_TA_coh_minus_rhy_comp_q2.5`, `r t3_TA_coh_minus_rhy_comp_q97.5`]), indicating greater competition from the late competitors in this window.
+In sum, the posterior estimates capture the critical patterns observed in the eye-tracking data (Figure\ \@ref(fig:model-posteriors-plots)E).
 
 
 ## Listeners adapt to the noise in the environment 

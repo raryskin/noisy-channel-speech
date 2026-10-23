@@ -6,16 +6,18 @@ library(cowplot)
 ```
 
 ```{r read in audio information}
-AUDIO_STIM_INFO_2 = '../data/vwp_noisy_speech_onsets_tier2.txt'
 
-aud_stim_info2 = read_tsv(AUDIO_STIM_INFO_2) %>%
-  mutate(Filename = str_c(Filename, '.wav'),
-         OnsetMS = Onset*1000,
-         OffsetMS = OnsetMS+(Duration*1000)) %>%
-  pivot_wider(names_from = Segmentlabel, values_from = c(-Filename, -Segmentlabel))
+onsets = read_tsv("../data/vwp_noisy_speech_segment_onsets.txt") %>% 
+  separate(Filename, into = c("a", "word", "i"))
 
-max_dur_pre_disamb = max(aud_stim_info2$Duration_pre*1000) # 433ms
-max_dur_post_disamb = max(aud_stim_info2$Duration_post*1000) # 409ms
+onsets_w = onsets %>% 
+  select(word, Segmentlabel, Onset, Duration) %>% 
+  pivot_wider(names_from = Segmentlabel, values_from = c(Onset, Duration)) %>%
+  mutate(Offset_t1 = Onset_t1 + Duration_t1,
+         Offset_t2 = Onset_t2 + Duration_t2,
+         Offset_t3 = Onset_t3 + Duration_t3)
+
+mean_offset = mean(onsets_w$Offset_t3)*1000
 
 ```
 
@@ -389,7 +391,7 @@ p_cohort<-ggplot(ET_timecourse_data_onset_crit_avg %>% filter(Condition != "Rhym
   scale_fill_manual(values = c("darkgrey", '#e41a1c'))+
   labs(y="Proportion of Fixations", x="Time relative to word onset (ms)")+
   geom_vline(aes(xintercept=200), linetype = "dashed")+
-  coord_cartesian(xlim = c(-100, max_dur_pre_disamb+max_dur_post_disamb+200 ), ylim = c(0,.82))+
+  coord_cartesian(xlim = c(-100, mean_offset ), ylim = c(0,.82))+
   theme_classic()+
   theme(legend.position = "none")
 
@@ -411,7 +413,7 @@ p_rhyme<-ggplot(ET_timecourse_data_onset_crit_avg %>% filter(Condition != "Cohor
   #scale_linetype_manual(values = c("solid", "dashed"), labels = c("Target", "Competitor"), name = "ROI")+
   labs(y="Proportion of Fixations", x="Time relative to word onset (ms)")+
   geom_vline(aes(xintercept=200), linetype = "dashed")+
-  coord_cartesian(xlim = c(-100, max_dur_pre_disamb+max_dur_post_disamb+200 ), ylim = c(0,0.82))+
+  coord_cartesian(xlim = c(-100, mean_offset ), ylim = c(0,0.82))+
   theme_classic()+
   theme(legend.position = "none")
 
