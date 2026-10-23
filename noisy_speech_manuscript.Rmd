@@ -39,7 +39,7 @@ abstract: |
   <!-- https://tinyurl.com/ybremelq -->
   
 keywords          : "Noisy Channel, speech comprehension, eye-tracking, Bayesian reasoning"
-wordcount         : "7148"
+wordcount         : "7150"
 
 bibliography      : ["software-refs.bib","references.bib"]
 
@@ -173,7 +173,7 @@ More broadly, this account points to a view of language comprehension and proces
 
 # Methods
 
-All pre-processed data are available on OSF (https://osf.io/ybxru/overview?view_only=33cb61764a7c4d7baa8fdbb5b28cd1f3) and the code to reproduce the manuscript is available at: https://github.com/raryskin/noisy-channel-speech. Google's Gemini large language model [@gemini2026] and Anthropic's Claude (Opus 5.5) were used for assistance with code generation and debugging. 
+All pre-processed data are available on OSF (https://osf.io/ybxru/overview?view_only=33cb61764a7c4d7baa8fdbb5b28cd1f3) and the code to reproduce the manuscript is available at: https://github.com/raryskin/noisy-channel-speech. Google's Gemini large language model and Anthropic's Claude (Opus 5.5) were used for assistance with code generation and debugging. 
 
 
 ## Eye-tracking experiment
@@ -256,7 +256,7 @@ In addition to audio files that were used as the stimuli for the experiment, aud
 
 ## Eye-tracking data pre-processing
 
-The x and y coordinates of participants' gaze were continuously recorded during each trial of the experiment. Eye gaze data were pre-processed and analyzed using custom `R` scripts. Only trials in which participants correctly clicked on the target were included. Each fixation was categorized in terms of whether it fell into one of the four regions of interest (ROI): the four quadrants of the display. In order to visualize the full timecourse of eye-gaze during word recognition, fixations were timelocked to the onset of the critical word in the audio instruction (e.g., "beaker"). A binary fixation measure for each ROI was computed for every 20ms bin, starting 200ms before the onset of the critical word and ending 2s after the onset of the critical word. For analysis, fixation durations were calculated per trial for each ROI in four time windows of interest, reflecting how much total time was spent on each of the ROIs within that time window per trial. These were then converted to proportions by dividing each ROI's duration by the summed total duration across all ROIs. The four time windows of interest were determined by critical moments in the audio stimulus (detailed above) and were offset by 200ms to account for oculomotor delay. 
+The x and y coordinates of participants' gaze were continuously recorded during each trial of the experiment. Eye gaze data were pre-processed and analyzed using custom `R` scripts. Only trials in which participants correctly clicked on the target were included. Each fixation was categorized in terms of whether it fell into one of the four regions of interest (ROI): the four quadrants of the display. In order to visualize the full timecourse of eye-gaze during word recognition, fixations were timelocked to the onset of the critical word in the audio instruction (e.g., "beaker"). A binary fixation measure for each ROI was computed for every 10ms bin, starting 200ms before the onset of the critical word and ending 2s after the onset of the critical word. For analysis, fixation durations were calculated per trial for each ROI in four time windows of interest, reflecting how much total time was spent on each of the ROIs within that time window per trial. These were then converted to proportions by dividing each ROI's duration by the summed total duration across all ROIs. The four time windows of interest were determined by critical moments in the audio stimulus (detailed above) and were offset by 200ms to account for oculomotor delay. 
 
 Trials with poor tracking quality were defined as those in which a fixation to any one of the 4 ROIs was recorded in fewer than 50% of the 10ms timebins. These trials were removed before analysis or visualization. This affected `r round(prop_trials_with_poor_track*100,1)`% of trials. Proportion of low track quality trials per participant ranged from `r round(min_prop_trials_with_poor_track_by_subj*100, 1)`% to `r round(max_prop_trials_with_poor_track_by_subj*100, 1)`%.
 

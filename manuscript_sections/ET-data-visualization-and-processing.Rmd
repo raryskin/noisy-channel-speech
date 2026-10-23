@@ -197,7 +197,7 @@ subj_filler_accuracy = ET_dur_data_4t %>%
   summarise(acc = mean(click_correct))
 
 keep_subjects = subj_filler_accuracy %>% 
-  filter(acc >.9) %>% # excludes noEA34
+  filter(acc >= .9) %>% # excludes noEA34
   pull(subjID)
 ```
 
@@ -244,6 +244,7 @@ ggplot(ET_timecourse_data_onset %>%
 ```{r check for poor ET data}
 
 ET_quality_by_trial = ET_timecourse_data_onset %>% 
+  filter(subjID %in% keep_subjects) %>% 
   filter(!Condition %in% c("Filler 1","Filler 2","Filler 3","Practice")) %>% 
   group_by(subjID, BlockOrder, trial_nums) %>% 
   summarize(prop_tracked = mean(total_fix)) 
