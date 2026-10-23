@@ -1487,19 +1487,21 @@ explained_noise_residual_effect_q97.5 = tau_contrasts_summary %>% filter(variabl
 
 In addition to demonstrating that the competition condition effects are well captured by a Bayesian noisy-channel model, analysis of the posterior reveals that listeners adapt their estimate of the noise probability, $\tau$, in response to the noise in the environment, based on multiple sources of information. Figure\ \@ref(fig:tau-effects-plots)A summarizes
 the posterior predictions of the timecourse of fixation proportions to targets and competitors across competition conditions, comparing all *Intact* blocks and *Noisy* blocks. Added noise in fillers decreases fixations to the target across competition conditions suggesting that $\tau$ is lower in the *Intact* blocks. 
-The posterior estimates of $\tau$ values by block type and contrasts between blocks are summarized in Figures\ \@ref(fig:tau-effects-plots)B and C. The lowest $\tau$ is observed in the first *Intact* block which did not contain added noise on filler trials ($M=$ `r tau1_m`, 
-$95\%~\text{CrI}=$ [`r tau1_q2.5`, `r tau1_q97.5`]). The highest $\tau$ is observed in the first *Noisy* block ($M=$ `r tau2_m`, 
-$95\%~\text{CrI}=$ [`r tau2_q2.5`, `r tau2_q97.5`],
-$\Delta=$ `r initial_noise_effect_m`,
-$95\%~\text{CrI}=$ [`r initial_noise_effect_q2.5`, `r initial_noise_effect_q97.5`]), indicating that listeners increase their noise estimates when there is an elevated frequency of acoustic noise in their environment. 
-$\tau$ was higher for the *Intact* block when it was preceded by a *Noisy* block ($M=$ `r tau4_m`, 
-$95\%~\text{CrI}=$ [`r tau4_q2.5`, `r tau4_q97.5`],
-$\Delta=$ `r noise_residual_effect_m`,
-$95\%~\text{CrI}=$ [`r noise_residual_effect_q2.5`, `r noise_residual_effect_q97.5`]) suggesting that the estimate of noise is based on continuous perceptual evidence accumulation. Similarly, $\tau$ was lower for the *Noisy* block when it was preceded by an *Intact* block ($M=$ `r tau3_m`, 
-$95\%~\text{CrI}=$ [`r tau3_q2.5`, `r tau3_q97.5`],
-$\Delta=$ `r noise_contrast_effect_m`,
-$95\%~\text{CrI}=$ [`r noise_contrast_effect_q2.5`, `r noise_contrast_effect_q97.5`]). Finally, $\tau$ was lower for the *Intact* block preceded by a *Noisy* block if the participant was explicitly informed that there was an error in the previous block and that the following set of stimuli would not contain acoustic noise ($M=$ `r tau5_m`, 
-$95\%~\text{CrI}=$ [`r tau5_q2.5`, `r tau5_q97.5`],
-$\Delta=$ `r explain_away_effect_m`,
-$95\%~\text{CrI}=$ [`r explain_away_effect_q2.5`, `r explain_away_effect_q97.5`]). In addition to accumulating perceptual evidence, listeners can also flexibly update their noise estimates based on a verbal characterization, which "explains away" the presence of noise.
+
+The posterior estimates of $\tau$ values by block type and contrasts between blocks are summarized in Figures\ \@ref(fig:tau-effects-plots)B and C. The lowest $\tau$ is observed in the first *Intact* block which did not contain added noise on filler trials ($M=$ `r apa_num(tau1_m, digits = 3)`, 
+$95\%~\text{CrI}=$ [`r apa_num(tau1_q2.5, digits = 3)`, `r apa_num(tau1_q97.5, digits = 3)`]). The highest $\tau$ is observed in the first *Noisy* block ($M=$ `r apa_num(tau2_m, digits = 3)`, 
+$95\%~\text{CrI}=$ [`r apa_num(tau2_q2.5, digits = 3)`, `r apa_num(tau2_q97.5, digits = 3)`],
+$\Delta=$ `r apa_num(initial_noise_effect_m, digits = 3)`,
+$95\%~\text{CrI}=$ [`r apa_num(initial_noise_effect_q2.5, digits = 3)`, `r apa_num(initial_noise_effect_q97.5, digits = 3)`]), indicating that listeners increase their noise estimates when there is an elevated frequency of acoustic noise in their environment. 
+$\tau$ was higher for the *Intact* block when it was preceded by a *Noisy* block ($M=$ `r apa_num(tau4_m, digits = 3)`, 
+$95\%~\text{CrI}=$ [`r apa_num(tau4_q2.5, digits = 3)`, `r apa_num(tau4_q97.5, digits = 3)`],
+$\Delta=$ `r apa_num(noise_residual_effect_m, digits = 3)`,
+$95\%~\text{CrI}=$ [`r apa_num(noise_residual_effect_q2.5, digits = 3)`, `r apa_num(noise_residual_effect_q97.5, digits = 3)`]) suggesting that the estimate of noise is based on continuous perceptual evidence accumulation. Similarly, $\tau$ was lower for the *Noisy* block when it was preceded by an *Intact* block ($M=$ `r apa_num(tau3_m, digits = 3)`, 
+$95\%~\text{CrI}=$ [`r apa_num(tau3_q2.5, digits = 3)`, `r apa_num(tau3_q97.5, digits = 3)`],
+$\Delta=$ `r apa_num(noise_contrast_effect_m, digits = 3)`,
+$95\%~\text{CrI}=$ [`r apa_num(noise_contrast_effect_q2.5, digits = 3)`, `r apa_num(noise_contrast_effect_q97.5, digits = 3)`]). Finally, $\tau$ was lower for the *Intact* block preceded by a *Noisy* block if the participant was explicitly informed that there was an error in the previous block and that the following set of stimuli would not contain acoustic noise ($M=$ `r apa_num(tau5_m, digits = 3)`, 
+$95\%~\text{CrI}=$ [`r apa_num(tau5_q2.5, digits = 3)`, `r apa_num(tau5_q97.5, digits = 3)`],
+$\Delta=$ `r apa_num(explain_away_effect_m, digits = 3)`,
+$95\%~\text{CrI}=$ [`r apa_num(explain_away_effect_q2.5, digits = 3)`, `r apa_num(explain_away_effect_q97.5, digits = 3)`]). In addition to accumulating perceptual evidence, listeners can also flexibly update their noise estimates based on a verbal characterization, which "explains away" the presence of noise.
+
 
